@@ -460,6 +460,44 @@ test('patients get a ped and a prompt that follows their condition', function()
     assertEq(harness.count(harness.entities), 0, 'and the ped is cleaned up')
 end)
 
+-- Models stream in asynchronously, so the scene almost never builds on the
+-- frame the call arrives. A patient that could not be spawned yet has to be
+-- retried, not silently skipped until the next update.
+test('a patient whose model has not streamed in yet is retried', function()
+    loadClient()
+    goOnDuty()
+    harness.modelsLoaded = false
+
+    fire('fire:sync', { callPayload({
+        victims = { v1 = { id = 'v1', coords = { x = 1.0, y = 1.0, z = 0.0 }, state = 'freed', condition = 60 } }
+    }) })
+    assertEq(harness.count(harness.entities), 0, 'nothing to spawn from yet')
+    assertTrue(DAG.Fire.Rescue.Refresh() > 0, 'and it knows it is still waiting')
+
+    harness.modelsLoaded = true
+    assertEq(DAG.Fire.Rescue.Refresh(), 0)
+    assertEq(harness.count(harness.entities), 1, 'the patient appeared on the retry')
+end)
+
+test('a patient is laid down once the anim dictionary loads', function()
+    loadClient()
+    goOnDuty()
+    harness.animDictsLoaded = false
+
+    fire('fire:sync', { callPayload({
+        victims = { v1 = { id = 'v1', coords = { x = 1.0, y = 1.0, z = 0.0 }, state = 'freed', condition = 60 } }
+    }) })
+    assertEq(harness.count(harness.entities), 1, 'the ped is there')
+    assertEq(#harness.animations, 0, 'but standing up')
+
+    harness.animDictsLoaded = true
+    DAG.Fire.Rescue.Refresh()
+    assertEq(harness.animations[1].anim, 'dead_a')
+
+    DAG.Fire.Rescue.Refresh()
+    assertEq(#harness.animations, 1, 'and it is not restarted every pass')
+end)
+
 test('an action that the firefighter walks away from is cancelled', function()
     loadClient()
     goOnDuty()

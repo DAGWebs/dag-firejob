@@ -12,7 +12,7 @@ local Client = Fire.Client
 local Rescue = {}
 Fire.Rescue = Rescue
 
-local peds, wrecks, interactions = {}, {}, {}
+local peds, wrecks, interactions, posed = {}, {}, {}, {}
 local carrying, action = nil, nil
 
 local CARRY_DICT = 'missfinale_c2mcs_1'
@@ -38,6 +38,7 @@ end
 
 local function removePed(entryKey)
     local entity = peds[entryKey]
+    posed[entryKey] = nil
     if not entity then return end
     if DoesEntityExist(entity) then DeleteEntity(entity) end
     peds[entryKey] = nil
@@ -86,10 +87,28 @@ local function markStage(callId, victim)
     return true
 end
 
+-- Laying the patient down is a separate step from creating them: the anim
+-- dictionary is loaded asynchronously and is almost never ready on the frame
+-- the ped appears, so the pose is applied on a later pass instead of being
+-- silently skipped.
+local function pose(entryKey, entity)
+    if posed[entryKey] or carrying == entryKey then return false end
+    if not requestAnim(DOWN_DICT) then return false end
+
+    TaskPlayAnim(entity, DOWN_DICT, DOWN_ANIM, 8.0, 0.0, -1, 1, 0.0, false, false, false)
+    posed[entryKey] = true
+    return true
+end
+
 local function spawnVictim(callId, victim)
     local entryKey = key(callId, victim.id)
-    if peds[entryKey] then return peds[entryKey] end
+    if peds[entryKey] then
+        pose(entryKey, peds[entryKey])
+        return peds[entryKey]
+    end
 
+    -- RequestModel is asynchronous. Returning nil here is not a failure: the
+    -- reconcile pass below comes back for it once the model has streamed in.
     local model = GetHashKey(victim.model or 'a_m_y_business_01')
     if not HasModelLoaded(model) then
         RequestModel(model)
@@ -103,11 +122,9 @@ local function spawnVictim(callId, victim)
     SetEntityInvincible(entity, true)
     SetBlockingOfNonTemporaryEvents(entity, true)
     FreezeEntityPosition(entity, true)
-    if requestAnim(DOWN_DICT) then
-        TaskPlayAnim(entity, DOWN_DICT, DOWN_ANIM, 8.0, 0.0, -1, 1, 0.0, false, false, false)
-    end
 
     peds[entryKey] = entity
+    pose(entryKey, entity)
     return entity
 end
 
@@ -217,10 +234,21 @@ function Rescue.Refresh()
             wrecks[entryKey] = nil
         end
     end
+
+    -- Anything still missing is waiting on a model or an anim dictionary.
+    local pending = 0
+    for entryKey in pairs(wanted) do
+        if not peds[entryKey] or not posed[entryKey] then pending = pending + 1 end
+    end
+    for entryKey in pairs(wantedWrecks) do
+        if not wrecks[entryKey] then pending = pending + 1 end
+    end
+    return pending
 end
 
 function Rescue.Clear()
     for entryKey in pairs(peds) do removePed(entryKey) end
+    posed = {}
     for entryKey, vehicle in pairs(wrecks) do
         if DoesEntityExist(vehicle) then DeleteEntity(vehicle) end
         wrecks[entryKey] = nil
@@ -335,6 +363,17 @@ CreateThread(function()
     while true do
         Rescue.ActionStep()
         Wait(action and 100 or 500)
+    end
+end)
+
+-- Scene props are rebuilt from the server's record on every update, but models
+-- stream in asynchronously, so a scene that could not be built on the event
+-- itself is retried here rather than staying empty until the next one.
+CreateThread(function()
+    while true do
+        local pending = 0
+        if Client.OnDuty() then pending = Rescue.Refresh() or 0 end
+        Wait(pending > 0 and 500 or 3000)
     end
 end)
 
