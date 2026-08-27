@@ -385,3 +385,42 @@ test('a native framework callback transport bypasses the built-in one', function
     callbackEvent()(1, 'native')
     assertEq(harness.clientEvents[1].args[3], 'unknown_callback', 'not stored in the built-in registry')
 end)
+
+-- Hiring needs the framework to move a player between jobs it already knows
+-- about. The bridge validates the arguments; where the job definition lives is
+-- the framework's business.
+test('SetJob refuses a malformed job or grade before reaching the adapter', function()
+    loadBridge()
+    local seen
+    DAG.Framework.RegisterAdapter('standalone', {
+        setJob = function(source, job, grade) seen = { source, job, grade } return true end
+    })
+
+    assertFalse(DAG.Framework.SetJob(1, '', 0))
+    assertFalse(DAG.Framework.SetJob(1, 'lsfd', -1))
+    assertFalse(DAG.Framework.SetJob(1, 'lsfd', 1.5))
+    assertFalse(DAG.Framework.SetJob(1, 42, 0))
+    assertNil(seen, 'nothing reached the adapter')
+
+    assertTrue(DAG.Framework.SetJob(1, 'lsfd', 3))
+    assertDeepEq(seen, { 1, 'lsfd', 3 })
+end)
+
+test('SetJob is reported as unsupported rather than silently failing', function()
+    loadBridge()
+    DAG.Framework.RegisterAdapter('standalone', {})
+
+    assertFalse(DAG.Framework.SetJob(1, 'lsfd', 0))
+    assertFalse(DAG.Framework.Supports('setJob'))
+end)
+
+test('the standalone adapter can hire, and the client sees the new job', function()
+    loadBridge()
+    harness.load('bridge/server/standalone.lua')
+
+    assertTrue(DAG.Framework.SetJob(4, 'lsfd', 2))
+    local job = DAG.Framework.GetJob(4)
+    assertEq(job.name, 'lsfd')
+    assertEq(job.grade, 2)
+    assertEq(harness.stateBags[4].dagPlayer.job.name, 'lsfd', 'replicated to the client')
+end)

@@ -68,6 +68,14 @@ Bridge.RegisterAdapter('standalone', {
         p.inventory[item] = current - amount
         return true
     end,
+    setJob = function(source, job, grade)
+        local p = player(source)
+        p.job.name = job
+        p.job.label = job
+        p.job.grade = grade
+        publish(source)
+        return true
+    end,
     setDuty = function(source, onDuty)
         player(source).job.onduty = onDuty
         publish(source)

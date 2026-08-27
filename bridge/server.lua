@@ -7,7 +7,7 @@ local warned = {}
 local METHODS = {
     'getPlayer', 'getIdentifier', 'getName', 'getJob', 'getMoney', 'addMoney',
     'removeMoney', 'getItemCount', 'addItem', 'removeItem', 'hasPermission',
-    'setDuty', 'createUseableItem', 'registerCallback'
+    'setDuty', 'setJob', 'createUseableItem', 'registerCallback'
 }
 
 local function finiteNumber(value)
@@ -188,6 +188,17 @@ end
 function Bridge.SetDuty(source, onDuty)
     if type(onDuty) ~= 'boolean' then return false end
     return call('setDuty', source, onDuty) == true
+end
+
+-- Hiring, firing, promoting. Every framework stores jobs somewhere different
+-- (QBCore reads shared/jobs.lua, ESX reads its jobs table, Ox Core uses
+-- groups), so this only asks the framework to move the player between jobs the
+-- framework already knows about — it never writes a job definition.
+function Bridge.SetJob(source, job, grade)
+    if type(job) ~= 'string' or job == '' then return false end
+    grade = tonumber(grade) or 0
+    if grade ~= grade or grade < 0 or grade % 1 ~= 0 then return false end
+    return call('setJob', source, job, grade) == true
 end
 
 function Bridge.CreateUseableItem(item, callback)

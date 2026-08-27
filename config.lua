@@ -63,3 +63,9 @@ Config.Standalone = {
     startingCash = 0,
     defaultJob = { name = 'unemployed', label = 'Unemployed', grade = 0, gradeName = 'none' }
 }
+
+-- Firefighter job (modules/firefighter). Declared here so the job is
+-- discoverable from the main config file; the stations, apparatus, call types,
+-- ranks, and payouts that fill this table live in modules/firefighter/config.lua
+-- because they are long enough to drown everything above.
+Config.Firefighter = {}

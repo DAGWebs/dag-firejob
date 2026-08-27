@@ -25,6 +25,43 @@ read_globals = {
     'RegisterNUICallback', 'SendNUIMessage', 'SetNuiFocus',
     'GetPlayerServerId', 'IsControlJustReleased', 'LocalPlayer', 'PlayerId',
     'PlayerPedId', 'vector3',
+    -- server-side entity access, used by the firefighter job to check where a
+    -- player and their apparatus really are before trusting a request
+    'GetPlayerPed', 'NetworkGetEntityFromNetworkId', 'DoesEntityExist',
+    'GetEntityModel', 'DeleteEntity', 'GetHashKey', 'GetEntityHeading',
+    -- client natives used by the firefighter job
+    'AddBlipForCoord', 'AttachEntityToEntity', 'BeginTextCommandDisplayText',
+    'BeginTextCommandSetBlipName', 'ClearPedTasks', 'CreatePed', 'CreateVehicle',
+    'DetachEntity', 'DrawRect', 'EndTextCommandDisplayText',
+    'EndTextCommandSetBlipName', 'FreezeEntityPosition', 'GetClosestObjectOfType',
+    'GetEntityForwardVector', 'GetEntityHealth', 'GetPedBoneIndex',
+    'GiveWeaponToPed', 'HasAnimDictLoaded', 'HasModelLoaded',
+    'HasNamedPtfxAssetLoaded', 'IsPedShooting', 'NetworkGetNetworkIdFromEntity',
+    'RegisterKeyMapping', 'RemoveBlip', 'RemoveScriptFire', 'RemoveWeaponFromPed',
+    'RequestAnimDict', 'RequestModel', 'RequestNamedPtfxAsset',
+    'SetBlipAsShortRange', 'SetBlipColour', 'SetBlipFlashes', 'SetBlipRoute',
+    'SetBlipScale', 'SetBlipSprite', 'SetBlockingOfNonTemporaryEvents',
+    'SetCurrentPedWeapon', 'SetEntityAsMissionEntity', 'SetEntityHealth',
+    'SetEntityInvincible', 'SetModelAsNoLongerNeeded', 'SetNewWaypoint',
+    'SetTextColour', 'SetTextFont', 'SetTextOutline', 'SetTextScale',
+    'SetVehicleEngineOn', 'SetVehicleNumberPlateText', 'SetVehicleOnGroundProperly',
+    'StartParticleFxNonLoopedAtCoord', 'StartScriptFire', 'TaskPlayAnim',
+    'TaskWarpPedIntoVehicle', 'UseParticleFxAssetNextCall',
+    -- hose lines, uniforms, wrecks, and the player-incident detectors
+    'ClearPedProp', 'CreateObject', 'GetEntitySpeed', 'GetPedDrawableVariation',
+    'GetPedPropIndex', 'GetPedPropTextureIndex', 'GetPedTextureVariation',
+    'GetVehicleEngineHealth', 'GetVehiclePedIsIn', 'HasEntityCollidedWithAnything',
+    'IsEntityOnFire', 'IsPedDeadOrDying', 'IsPedInAnyVehicle', 'IsPedMale',
+    'NetworkDoesNetworkIdExist',
+    'PlaceObjectOnGroundProperly', 'SetEntityCollision', 'SetPedComponentVariation',
+    'SetPedPropIndex', 'SetSeethrough', 'SetVehicleBodyHealth',
+    'SetVehicleDeformationFixed', 'SetVehicleDoorBroken', 'SetVehicleEngineHealth',
+    'SmashVehicleWindow',
+    -- the sensory layer: particles, timecycles, sound
+    'ClearTimecycleModifier', 'SetTimecycleModifier', 'SetTimecycleModifierStrength',
+    'PlaySoundFrontend', 'PlaySoundFromCoord', 'GetPedBoneCoords',
+    'StartParticleFxLoopedAtCoord', 'StopParticleFxLooped',
+    'DisableControlAction', 'SetPedToRagdoll', 'ShakeGameplayCam', 'IsControlJustPressed',
 }
 
 exclude_files = { 'tests/lua/vendor/**' }

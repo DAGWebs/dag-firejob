@@ -37,6 +37,12 @@ Bridge.RegisterAdapter('qb', {
         return ok and allowed == true
     end,
     setDuty = function(source, onDuty) local p = player(source) return p and p.Functions.SetJobDuty(onDuty) or false end,
+    -- QBCore job definitions live in shared/jobs.lua, not the database; this
+    -- moves the player onto one that is already defined there.
+    setJob = function(source, job, grade)
+        local p = player(source)
+        return p ~= nil and p.Functions.SetJob(job, grade) ~= false
+    end,
     createUseableItem = function(item, callback) core().Functions.CreateUseableItem(item, callback) return true end,
     registerCallback = function(name, callback) core().Functions.CreateCallback(name, callback) end
 })

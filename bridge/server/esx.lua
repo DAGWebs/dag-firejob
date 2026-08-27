@@ -65,6 +65,16 @@ Bridge.RegisterAdapter('esx', {
         if group == 'superadmin' then return true end
         return group ~= nil and group ~= 'user' and permission == group
     end,
+    -- ESX job definitions live in the `jobs` and `job_grades` tables. setJob
+    -- returns nothing, so the change is confirmed by re-reading the job for
+    -- the same reason the account mutators above do.
+    setJob = function(source, job, grade)
+        local p = player(source)
+        if not p then return false end
+        p.setJob(job, grade)
+        local current = p.getJob()
+        return current ~= nil and current.name == job
+    end,
     createUseableItem = function(item, callback) core().RegisterUsableItem(item, callback) return true end,
     registerCallback = function(name, callback) core().RegisterServerCallback(name, callback) end
 })

@@ -26,5 +26,6 @@ DAG.Framework.RegisterAdapter('qbox', {
     addItem = function(source, item, amount, metadata) return exports.ox_inventory:AddItem(source, item, amount, metadata) == true end,
     removeItem = function(source, item, amount, metadata) return exports.ox_inventory:RemoveItem(source, item, amount, metadata) == true end,
     setDuty = function(source, onDuty) exports.qbx_core:SetJobDuty(source, onDuty) return true end,
+    setJob = function(source, job, grade) return exports.qbx_core:SetJob(source, job, grade) ~= false end,
     createUseableItem = function(item, callback) exports.qbx_core:CreateUseableItem(item, callback) return true end
 })
