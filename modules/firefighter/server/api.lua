@@ -74,6 +74,11 @@ local REASONS = {
     role_taken = 'Somebody else already has that role.',
     needs_help = 'That takes two: get somebody else on scene.',
     no_par = 'There is no accountability check running.',
+    unknown_chore = 'No such job.',
+    already_working = 'You are already doing something.',
+    wrong_place = 'Not here. Go to the right part of the station.',
+    left_it = 'You wandered off halfway through.',
+    not_working = 'You are not doing anything.',
     not_down = 'They are not down.',
     already_down = 'You are already down.',
     already_rescuing = 'Somebody else is already on them.',
@@ -486,6 +491,29 @@ on('fire:returnUnit', function(source)
     if not ok then return fail(source, reason) end
 end)
 
+-- Station work -------------------------------------------------------------
+
+on('fire:chore', function(source, choreId)
+    if type(choreId) ~= 'string' then return end
+
+    local ok, reason, duration = Fire.Chores.Begin(source, choreId)
+    if not ok then return fail(source, reason) end
+    TriggerClientEvent(Bridge.Event('fire:choreStarted'), source, choreId, duration)
+end)
+
+on('fire:choreDone', function(source)
+    local ok, reason, chore = Fire.Chores.Complete(source)
+    if not ok then
+        if reason ~= 'not_working' then fail(source, reason) end
+        return
+    end
+    Bridge.Notify(source, ('%s done.'):format(chore.label), 'success')
+end)
+
+on('fire:choreCancel', function(source)
+    Fire.Chores.Cancel(source)
+end)
+
 -- Mayday -------------------------------------------------------------------
 
 on('fire:mayday', function(source)
@@ -661,6 +689,7 @@ Bridge.RegisterCallback(Bridge.Event('fire:context'), function(source, reply)
             return Fire.Crew.Board(call)
         end)(),
         roles = Fire.Crew.Roles(),
+        chores = Fire.Chores.Catalogue(source),
         mayday = (function()
             local list = {}
             for downSource, down in pairs(Fire.Mayday.Active()) do

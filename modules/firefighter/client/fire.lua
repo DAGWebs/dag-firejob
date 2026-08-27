@@ -294,6 +294,57 @@ function Suppression.NearestHydrant(coords)
     return nil
 end
 
+-- The deck monitor -----------------------------------------------------------
+
+-- High flow and long reach, off the pump, and you cannot walk away with it:
+-- mounting it puts you at the truck until you step off.
+local mounted = false
+
+function Suppression.Mounted()
+    return mounted
+end
+
+function Suppression.ToggleMonitor()
+    if mounted then
+        mounted = false
+        Suppression.Stow()
+        FreezeEntityPosition(ped(), false)
+        return false
+    end
+
+    local unit = Client.Unit()
+    if not unit or (unit.capacity or 0) <= 0 then
+        Bridge.Notify('There is no pump here to work.', 'error')
+        return false
+    end
+
+    local here = Shared.Coords(GetEntityCoords(ped()))
+    local entity = unit.netId and NetworkDoesNetworkIdExist(unit.netId)
+        and NetworkGetEntityFromNetworkId(unit.netId)
+    local truck = entity and entity ~= 0 and DoesEntityExist(entity)
+        and Shared.Coords(GetEntityCoords(entity)) or nil
+
+    local reach = tonumber((Shared.Settings().water or {}).apparatusDistance) or 8.0
+    if not truck or not here or Shared.Distance(here, truck) > reach then
+        Bridge.Notify('Stand at the pump to work the monitor.', 'error')
+        return false
+    end
+
+    mounted = true
+    Suppression.Equip('monitor')
+    FreezeEntityPosition(ped(), true)
+    Bridge.Notify('On the deck gun. Press again to step off.', 'inform', 5000)
+    return true
+end
+
+-- Stepping off happens by itself if the truck leaves or the shift ends.
+CreateThread(function()
+    while true do
+        if mounted and (not Client.Unit() or not Client.OnDuty()) then Suppression.ToggleMonitor() end
+        Wait(1000)
+    end
+end)
+
 -- Threads ------------------------------------------------------------------
 
 CreateThread(function()

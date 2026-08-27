@@ -247,6 +247,67 @@ CreateThread(function()
     end
 end)
 
+-- Station work ---------------------------------------------------------------
+
+local chore = nil
+
+function Duty.Chore()
+    return chore
+end
+
+function Duty.StartChore(choreId)
+    TriggerServerEvent(Bridge.Event('fire:chore'), choreId)
+end
+
+function Duty.ChoreProgress()
+    if not chore then return nil end
+    return Shared.Clamp((GetGameTimer() - chore.startedAt) / math.max(1, chore.duration), 0, 1), chore.label
+end
+
+-- Wandering off halfway through is the same answer as it is everywhere else in
+-- this job: you do not get it.
+function Duty.ChoreStep()
+    if not chore then return nil end
+
+    local here = Shared.Coords(GetEntityCoords(PlayerPedId()))
+    if not here or Shared.Distance(here, chore.origin) > 5.0 then
+        chore = nil
+        TriggerServerEvent(Bridge.Event('fire:choreCancel'))
+        Bridge.Notify('You wandered off.', 'error')
+        return 'cancelled'
+    end
+
+    if GetGameTimer() - chore.startedAt < chore.duration then return 'working' end
+
+    chore = nil
+    ClearPedTasks(PlayerPedId())
+    TriggerServerEvent(Bridge.Event('fire:choreDone'))
+    return 'complete'
+end
+
+RegisterNetEvent(Bridge.Event('fire:choreStarted'), function(choreId, duration)
+    chore = {
+        id = choreId,
+        label = choreId,
+        duration = tonumber(duration) or 10000,
+        startedAt = GetGameTimer(),
+        origin = Shared.Coords(GetEntityCoords(PlayerPedId()))
+    }
+
+    if HasAnimDictLoaded('mini@repair') then
+        TaskPlayAnim(PlayerPedId(), 'mini@repair', 'fixing_a_ped', 8.0, -8.0, -1, 1, 0.0, false, false, false)
+    else
+        RequestAnimDict('mini@repair')
+    end
+end)
+
+CreateThread(function()
+    while true do
+        Duty.ChoreStep()
+        Wait(chore and 250 or 1000)
+    end
+end)
+
 -- Menu entry point ----------------------------------------------------------
 
 -- Names and keys both come from config, and either can be turned off: a

@@ -475,10 +475,12 @@ modules/
     ├── config.lua         departments, stations, run card, ranks, training
     ├── shared.lua         departments, ranks, suppression arithmetic
     ├── server/            persistence, live config editor, framework job
-    │                      definitions, state, simulation, dispatch, hiring,
-    │                      academy, incident sources, billing, terminal, API
-    └── client/            config, mirror, rendering, hose, rescue, uniform,
-                           events, station, academy, terminal, HUD, menus
+    │                      definitions, state, simulation, dispatch, crew,
+    │                      mayday, chores, hiring, academy, incident sources,
+    │                      billing, terminal, API
+    └── client/            config, mirror, rendering, effects, hose, skill,
+                           crew, mayday, rescue, uniform, events, station,
+                           academy, terminal, HUD, menus
 sql/                       schema, plus the ESX job and item imports
 install/                   per-framework job and item definitions to paste in
 ```
@@ -490,7 +492,7 @@ stub, so the tests exercise the code the server runs rather than matching
 source text:
 
 ```bash
-lua5.4 tests/lua/run.lua              # 375 behavioural tests
+lua5.4 tests/lua/run.lua              # 429 behavioural tests
 python3 -m unittest discover -s tests # manifest/adapter/config invariants
 luacheck .                            # lint
 find . -name '*.lua' -not -path './.git/*' -print0 | xargs -0 -n1 luac5.4 -p
@@ -529,6 +531,14 @@ in a different place on every framework, and there is a page per framework.
   its own stations, framework job, uniform, jurisdiction, and roster. Calls are
   routed to whichever department covers where they happened, and a department
   with nobody on duty has its neighbours toned out for mutual aid.
+- **Smoke, water, sound and a column the city can see.** The gauge and what you
+  can see are the same number, and the thermal camera has something to cut
+  through.
+- **A crew, not several people standing near each other.** Roles, work that goes
+  faster with more hands, accountability checks, and a mayday when one of them
+  cannot get themselves out.
+- **A fire you have to read.** Flashover and collapse, both warned about and both
+  survivable, and triage that pays for taking the worst patient first.
 - **A terminal with billing.** Call history, incident reports, personnel
   records, and an invoice ledger the department owns, settled through whichever
   framework is running.
@@ -576,6 +586,113 @@ in a different place on every framework, and there is a page per framework.
   the schema created on first start if you would rather not import anything, and
   the resource's own JSON store as the fallback when no driver is running.
 
+### What it feels like
+
+The simulation decides what is true. These decide what it is like to be there.
+
+**Smoke you cannot see through.** Every burning node puts out smoke that
+thickens towards the fire, and standing in it closes your vision down. It is
+also what drains the cylinder — the gauge and what you can see are the same
+number — and it is what the thermal camera is for. Vision has an order to it:
+running out of air beats everything, the camera beats smoke, smoke beats heat.
+
+**Water that goes where you point it.** The stream is drawn from the nozzle to
+the node the server is actually scoring, so what you see and what counts are the
+same thing.
+
+**A column the city can see.** A fire past about half severity puts up a plume
+visible from hundreds of metres, and a building that burned is still smoking when
+you drive past it later.
+
+**Breathing.** It gets faster as the cylinder empties, and a heartbeat starts
+when it is nearly gone.
+
+Every particle, sound and timecycle name is configuration
+(`Config.Firefighter.effects`), and anything that will not load is skipped rather
+than erroring — a wrong asset name costs that server an effect and nothing else.
+
+### Working as a crew
+
+A call has roles: **command, nozzle, backup, pump, search, medic**. The
+exclusive ones are held by one firefighter at a time, the certified ones are
+gated, and only an incident commander assigns somebody else.
+
+**Every timed job goes faster the more hands are on scene**, always, down to a
+floor. Rewarding teamwork beats requiring it, and a two-firefighter server should
+still be able to play — so jobs that genuinely need two people are opt-in:
+
+```lua
+Config.Firefighter.crew.assistBonus = 0.25   -- off the clock per extra hand
+Config.Firefighter.crew.enforce = true       -- and these actually need two
+Config.Firefighter.crew.requiresTwo = { 'roof', 'ladder', 'supply' }
+```
+
+**Personnel accountability.** Command calls a PAR, everybody answers inside the
+window with `E`, and whoever does not is named on the radio. "Interior" is
+tracked as being in the smoke rather than as a flag somebody sets, which is what
+makes not answering serious — and a firefighter who does not answer while inside
+goes into mayday.
+
+### Mayday
+
+A firefighter who **runs out of air inside**, takes too much heat, or calls it
+themselves goes down. The whole department hears it, not just the crew on that
+call. A flashing blip drops on them and takes the waypoint. Somebody has to reach
+them and drag them out before the clock runs down; getting there pays and goes on
+the record, and not getting there is the end of it.
+
+This is what makes the air gauge matter. Running out used to be an inconvenience.
+
+### Reading the fire
+
+**Flashover.** Heat builds in a closed room until it lets go all at once. It
+warns first, and knocking the fire down bleeds the risk back off — that is the
+answer to it.
+
+**Collapse.** A structure left burning long enough comes down, with a generous
+warning, because the answer is to leave and leaving takes time.
+
+Both are survivable. Whoever ignored the warning is the one who takes the damage,
+and a firefighter hurt badly enough by it goes straight into mayday.
+
+### Triage
+
+Patients are sorted **immediate, delayed, minor, expectant**, and the tag is on
+the prompt before you choose who to work. Treating the walking wounded while
+somebody bleeds out is the mistake triage exists to prevent, so the bonus only
+pays for having taken the worst one waiting.
+
+### Skill
+
+Every timed job used to be stand-here-for-N-seconds, which meant the best
+firefighter on the server and the worst one got identical results. Now a cursor
+sweeps a bar with a target zone in it: hits walk the finish line down towards the
+floor the server set when the job started, and the saved time pays a capped
+bonus. Ignoring it is not a failure — it is working at the normal speed — so
+nobody is punished for not wanting a minigame. `ox_lib`'s own skill check is used
+where it is running.
+
+The floor is the server's: the most a perfect run can do is exactly what a
+perfect run should do, and a client that lies gets no further than that.
+
+### Station life
+
+The job is mostly waiting, so there is something to do while waiting: apparatus
+checks, hose testing, equipment inventory, cleaning the hall. Each pays a little,
+each has to be done at the fixture it is about, and each is on a cooldown so it
+is something to do rather than something to farm.
+
+The **deck monitor** is now a position rather than a config entry: stand at the
+pump, mount it for long reach and high flow, and you are there until you step
+off or the truck leaves.
+
+### The scanner
+
+Serious calls go out on `<resource>:dag:fire:scanner`, which any resource can
+subscribe to. Naming another dispatch resource in `Config.Firefighter.scanner.event`
+pushes the same payload straight there, so police and EMS find out a building is
+on fire without this job knowing anything about their resources.
+
 ### Getting on duty
 
 Duty is granted per department by a `DAG.Access` policy: that department's
@@ -619,6 +736,7 @@ Config.Firefighter.keybinds.mdt = false          -- registered, but unbound
 | `clear` | `<prefix>:fdclear [callId]` | Officers | Close a call |
 | `dispatch` | `<prefix>:fdcall <type> [here]` | Admins | Dispatch a call |
 | `experience` | `<prefix>:fdxp <id> <amount>` | Admins | Adjust an XP total |
+| `mayday` | `<prefix>:mayday` | Firefighters | Call a mayday when you cannot get out |
 | `editor` | `set` | Admins | The in-game config editor |
 
 Only `menu` ships bound to a key. The terminal and the hose line are registered
@@ -917,6 +1035,12 @@ Fire.Billing.Create({ identifier = id, amount = 500, reason = 'Callout' })
 Fire.Billing.Estimate(call)                     -- what a call is worth
 Fire.Jobs.Get('lsfd')                           -- as the framework defines it
 Fire.Mdt.History('lsfd', 10, function(rows) end)
+Fire.Crew.Board(call)                           -- who is doing what
+Fire.Mayday.Declare(source, 'air')              -- put somebody down
+Fire.Chores.Catalogue(source)
+
+-- Anything can listen for the department's traffic
+AddEventHandler(('%s:dag:fire:scanner'):format(resource), function(call) end)
 Fire.Progression.Leaderboard(10, function(rows) end)
 Fire.State.Roster('lsfd')
 ```
@@ -926,9 +1050,8 @@ renderer and nozzle, `Fire.Hose` lays lines, `Fire.Uniform` dresses the ped, and
 `Fire.Menus.Refresh()` rebuilds every menu from the current state — registering
 a menu id again is the supported way to update a live board.
 
-Things deliberately left as extension points: a scanner or dispatch feed for
-other services (subscribe to the `fire:radio` client event), a bespoke NUI skin
-for the terminal, appearance-resource integration
+Things deliberately left as extension points: a bespoke NUI skin for the
+terminal, appearance-resource integration
 (`Config.Firefighter.uniforms.provider`), and vRP hiring, which needs
 `ExtendAdapter('vrp', { setJob = ... })` for your fork.
 

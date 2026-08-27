@@ -65,6 +65,7 @@ server_scripts {
     'modules/firefighter/server/dispatch.lua',
     'modules/firefighter/server/crew.lua',
     'modules/firefighter/server/mayday.lua',
+    'modules/firefighter/server/chores.lua',
     'modules/firefighter/server/academy.lua',
     'modules/firefighter/server/events.lua',
     'modules/firefighter/server/mdt.lua',

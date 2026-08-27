@@ -151,7 +151,14 @@ local function lockerOptions()
         { title = 'Nozzles', header = true },
         agentOption('hose', 'Hose line', 'Full flow. Pulls a line off a pump parked nearby.', 'hose'),
         agentOption('extinguisher', 'Extinguisher', 'Short reach, carried on you.', 'extinguisher'),
-        agentOption('monitor', 'Deck monitor', 'Long reach and high flow, straight off the pump.'),
+        {
+            title = 'Deck monitor',
+            description = 'Long reach and high flow, worked from the pump',
+            icon = 'car',
+            badge = Suppression.Mounted() and 'On the gun' or nil,
+            badgeTone = 'success',
+            onSelect = function() Suppression.ToggleMonitor() end
+        },
         {
             title = line and 'Stow the line' or 'Stow equipment',
             icon = 'close',
@@ -306,6 +313,19 @@ local function mainOptions()
     end
 
     options[#options + 1] = { title = 'Station', header = true }
+    options[#options + 1] = {
+        title = 'Station work',
+        description = 'Checks and jobs around the hall',
+        icon = 'wrench',
+        badge = (function()
+            local ready = 0
+            for _, chore in ipairs(context.chores or {}) do
+                if chore.available then ready = ready + 1 end
+            end
+            return ready > 0 and tostring(ready) or nil
+        end)(),
+        menu = menuId('chores')
+    }
     options[#options + 1] = { title = 'Equipment locker', icon = 'box', menu = menuId('locker') }
     options[#options + 1] = { title = 'Apparatus bay', icon = 'car', menu = menuId('garage') }
     options[#options + 1] = {
@@ -750,6 +770,30 @@ function Menus.Refresh()
         id = menuId('departments'),
         title = 'Departments',
         options = departmentOptions()
+    })
+    DAG.Menu.Register({
+        id = menuId('chores'),
+        title = 'Station work',
+        subtitle = 'Something to do between calls',
+        options = (function()
+            local options = { { title = 'Jobs', header = true } }
+            for _, chore in ipairs(context.chores or {}) do
+                options[#options + 1] = {
+                    title = chore.label,
+                    description = ('At the %s'):format(chore.point or 'station'),
+                    icon = 'wrench',
+                    disabled = not chore.available,
+                    badge = chore.available and Shared.FormatMoney(chore.pay or 0)
+                        or Shared.FormatDuration(chore.cooldown or 0),
+                    badgeTone = chore.available and 'success' or nil,
+                    onSelect = function() Duty.StartChore(chore.id) end
+                }
+            end
+            if #options == 1 then
+                options[#options + 1] = { title = 'Nothing to do right now', disabled = true }
+            end
+            return options
+        end)()
     })
     DAG.Menu.Register({
         id = menuId('crew'),

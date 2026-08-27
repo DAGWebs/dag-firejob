@@ -151,6 +151,14 @@ function Hud.Draw()
         end
     end
 
+    local choreProgress, choreLabel
+    if Fire.Duty then choreProgress, choreLabel = Fire.Duty.ChoreProgress() end
+    if choreProgress then
+        text(('%s...'):format(choreLabel or 'Working'), x, row, 0.3)
+        bar(x + 0.055, row + 0.004, 0.09, choreProgress, 120, 180, 235)
+        row = row + 0.022
+    end
+
     local progress, kind = Rescue.ActionProgress()
     if progress then
         text(('%s...'):format(kind), x, row, 0.3)

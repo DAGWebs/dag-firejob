@@ -100,6 +100,7 @@ function Dispatch.Create(kind, options)
     State.SyncCall(call)
 
     radio(('%s - %s at %s'):format(call.id, call.label, call.location), 'inform', call)
+    Dispatch.Scanner(call)
     return call
 end
 
@@ -418,6 +419,36 @@ function Dispatch.Tick()
             State.SyncCall(call)
         end
     end
+end
+
+-- The scanner --------------------------------------------------------------
+
+-- What the rest of the city hears. Any resource can subscribe to this event;
+-- naming another dispatch resource in config pushes it straight there as well,
+-- which is how police and EMS find out a building is on fire without this job
+-- having to know anything about them.
+function Dispatch.Scanner(call)
+    local config = Shared.Settings().scanner or {}
+    if config.enabled == false then return false end
+    if (tonumber(call.priority) or 3) > (tonumber(config.priority) or 2) then return false end
+
+    local payload = {
+        id = call.id,
+        kind = call.kind,
+        label = call.label,
+        location = call.location,
+        coords = Shared.Coords(call.coords),
+        priority = call.priority,
+        department = call.department,
+        source = call.source,
+        service = 'fire'
+    }
+
+    TriggerEvent(Bridge.Event('fire:scanner'), payload)
+    if type(config.event) == 'string' and config.event ~= '' then
+        TriggerEvent(config.event, payload)
+    end
+    return true
 end
 
 -- Reading the fire ---------------------------------------------------------

@@ -13,6 +13,7 @@ local SERVER_FILES = {
     'modules/firefighter/server/dispatch.lua',
     'modules/firefighter/server/crew.lua',
     'modules/firefighter/server/mayday.lua',
+    'modules/firefighter/server/chores.lua',
     'modules/firefighter/server/academy.lua',
     'modules/firefighter/server/events.lua',
     'modules/firefighter/server/mdt.lua',
@@ -1566,4 +1567,129 @@ test('a lone patient is always the right one to treat', function()
     harness.gameTimer = harness.gameTimer + 20000
 
     assertTrue(select(3, DAG.Fire.Incident.CompleteAction(1)).triage)
+end)
+
+-- Station life ---------------------------------------------------------------
+
+test('a chore has to be done at the thing it is about', function()
+    loadServer()
+    onDuty(1, vector3(0.0, 0.0, 0.0))
+
+    local ok, reason = DAG.Fire.Chores.Begin(1, 'apparatus')
+    assertFalse(ok)
+    assertEq(reason, 'wrong_place')
+
+    local station = DAG.Fire.Shared.Stations()[1]
+    local garage = DAG.Fire.Shared.Points(station, 'garage')[1]
+    harness.placePlayer(1, vector3(garage.x, garage.y, garage.z))
+    assertTrue(DAG.Fire.Chores.Begin(1, 'apparatus'))
+end)
+
+test('finishing a chore pays and starts its cooldown', function()
+    loadServer()
+    onDuty(1)
+    local station = DAG.Fire.Shared.Stations()[1]
+    local garage = DAG.Fire.Shared.Points(station, 'garage')[1]
+    harness.placePlayer(1, vector3(garage.x, garage.y, garage.z))
+
+    DAG.Fire.Chores.Begin(1, 'apparatus')
+    harness.gameTimer = harness.gameTimer + 15000
+    assertTrue(DAG.Fire.Chores.Complete(1))
+
+    assertEq(DAG.Framework.GetMoney(1, 'bank'), 200)
+    assertEq(DAG.Fire.State.ProfileFor('license:1').stats.chores, 1)
+
+    local ok, reason = DAG.Fire.Chores.Begin(1, 'apparatus')
+    assertFalse(ok)
+    assertEq(reason, 'cooling_down')
+end)
+
+test('wandering off halfway through a chore forfeits it', function()
+    loadServer()
+    onDuty(1)
+    local station = DAG.Fire.Shared.Stations()[1]
+    local garage = DAG.Fire.Shared.Points(station, 'garage')[1]
+    harness.placePlayer(1, vector3(garage.x, garage.y, garage.z))
+
+    DAG.Fire.Chores.Begin(1, 'apparatus')
+    harness.gameTimer = harness.gameTimer + 15000
+    harness.placePlayer(1, vector3(garage.x + 100, garage.y, garage.z))
+
+    local ok, reason = DAG.Fire.Chores.Complete(1)
+    assertFalse(ok)
+    assertEq(reason, 'left_it')
+    assertEq(DAG.Framework.GetMoney(1, 'bank'), 0)
+end)
+
+test('a chore cannot be rushed', function()
+    loadServer()
+    onDuty(1)
+    local station = DAG.Fire.Shared.Stations()[1]
+    local garage = DAG.Fire.Shared.Points(station, 'garage')[1]
+    harness.placePlayer(1, vector3(garage.x, garage.y, garage.z))
+
+    DAG.Fire.Chores.Begin(1, 'apparatus')
+    harness.gameTimer = harness.gameTimer + 2000
+
+    local ok, reason = DAG.Fire.Chores.Complete(1)
+    assertFalse(ok)
+    assertEq(reason, 'too_fast')
+end)
+
+test('the catalogue says what is available and what is still cooling down', function()
+    loadServer()
+    onDuty(1)
+    local station = DAG.Fire.Shared.Stations()[1]
+    local garage = DAG.Fire.Shared.Points(station, 'garage')[1]
+    harness.placePlayer(1, vector3(garage.x, garage.y, garage.z))
+
+    for _, chore in ipairs(DAG.Fire.Chores.Catalogue(1)) do assertTrue(chore.available) end
+
+    DAG.Fire.Chores.Begin(1, 'apparatus')
+    harness.gameTimer = harness.gameTimer + 15000
+    DAG.Fire.Chores.Complete(1)
+
+    for _, chore in ipairs(DAG.Fire.Chores.Catalogue(1)) do
+        if chore.id == 'apparatus' then
+            assertFalse(chore.available)
+            assertTrue(chore.cooldown > 0)
+        else
+            assertTrue(chore.available)
+        end
+    end
+end)
+
+-- The scanner -------------------------------------------------------------------
+
+-- How the rest of the city finds out a building is on fire, without this job
+-- knowing anything about their resources.
+test('a serious call goes out on the scanner and a quiet one does not', function()
+    loadServer()
+    onDuty(1)
+
+    local heard = {}
+    AddEventHandler(DAG.Framework.Event('fire:scanner'), function(payload)
+        heard[#heard + 1] = payload
+    end)
+
+    DAG.Fire.Dispatch.Create('structure', { department = 'lsfd', force = true })
+    assertEq(#heard, 1)
+    assertEq(heard[1].service, 'fire')
+    assertEq(heard[1].kind, 'structure')
+
+    DAG.Fire.Dispatch.Create('alarm', { department = 'lsfd', force = true })
+    assertEq(#heard, 1, 'an automatic alarm is not everybody\'s business')
+end)
+
+test('another dispatch resource can be handed the same call', function()
+    loadServer()
+    onDuty(1)
+    Config.Firefighter.scanner.event = 'my-dispatch:newCall'
+
+    local heard
+    AddEventHandler('my-dispatch:newCall', function(payload) heard = payload end)
+    DAG.Fire.Dispatch.Create('structure', { department = 'lsfd', force = true })
+
+    assertTrue(heard ~= nil)
+    assertEq(heard.service, 'fire')
 end)
