@@ -25,6 +25,7 @@ client_scripts {
     'modules/firefighter/client/fire.lua',
     'modules/firefighter/client/effects.lua',
     'modules/firefighter/client/hose.lua',
+    'modules/firefighter/client/skill.lua',
     'modules/firefighter/client/crew.lua',
     'modules/firefighter/client/mayday.lua',
     'modules/firefighter/client/rescue.lua',

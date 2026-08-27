@@ -8,6 +8,7 @@ local CLIENT_FILES = {
     'modules/firefighter/client/fire.lua',
     'modules/firefighter/client/effects.lua',
     'modules/firefighter/client/hose.lua',
+    'modules/firefighter/client/skill.lua',
     'modules/firefighter/client/crew.lua',
     'modules/firefighter/client/mayday.lua',
     'modules/firefighter/client/rescue.lua',
@@ -671,6 +672,106 @@ test('a building that burned is still smoking later', function()
     harness.gameTimer = harness.gameTimer + 1000000
     assertEq(DAG.Fire.Effects.AftermathStep(), 0)
     assertEq(#DAG.Fire.Effects.Aftermath(), 0, 'and it stops being remembered')
+end)
+
+-- The skill check ---------------------------------------------------------------
+
+-- The difference between the best firefighter on the server and the worst one.
+test('hitting the zone scores and moving the zone stops it being free', function()
+    loadClient()
+    local Skill = DAG.Fire.Skill
+    harness.gameTimer = 0
+
+    Skill.Begin(6000)
+    local check = Skill.Active()
+    assertTrue(check ~= nil)
+
+    -- Park the cursor inside the zone and press.
+    check.zone = { from = 0.0, to = 1.0 }
+    assertTrue(Skill.Press())
+    assertEq(check.hits, 1)
+    assertEq(DAG.Fire.Shared.Round(check.zone.to - check.zone.from, 2), 0.28,
+        'the zone is placed again at the configured width')
+
+    check.zone = { from = 0.99, to = 1.0 }
+    harness.gameTimer = 0
+    assertFalse(Skill.Press(), 'and a press outside it misses')
+    assertEq(check.hits, 1)
+end)
+
+test('the cursor sweeps back rather than jumping', function()
+    loadClient()
+    DAG.Fire.Skill.Begin(6000)
+    harness.gameTimer = 0
+
+    local first = DAG.Fire.Skill.Cursor()
+    harness.gameTimer = 400
+    local second = DAG.Fire.Skill.Cursor()
+    assertTrue(second > first, 'it moves')
+
+    -- Past the end of a sweep it comes back the other way.
+    harness.gameTimer = 1000
+    local peak = DAG.Fire.Skill.Cursor()
+    harness.gameTimer = 1400
+    assertTrue(DAG.Fire.Skill.Cursor() < peak)
+end)
+
+-- Ignoring the check is not a failure, it just means working at the normal
+-- speed: a firefighter who never presses anything still finishes the job.
+test('ignoring the check scores nothing rather than failing', function()
+    loadClient()
+    DAG.Fire.Skill.Begin(6000)
+    assertEq(DAG.Fire.Skill.Score(), 0)
+    assertEq(DAG.Fire.Skill.Finish(), 0)
+    assertNil(DAG.Fire.Skill.Active())
+end)
+
+-- The whole point: a job worked well finishes earlier, and never earlier than
+-- the floor the server set.
+test('a well-worked job finishes early and a fumbled one takes the full time', function()
+    loadClient()
+    goOnDuty()
+    harness.playerCoords = vector3(0.0, 0.0, 0.0)
+    harness.gameTimer = 1000
+
+    fire('fire:actionStarted', 'treat', 'v1', 10000, 'Treat', 5000)
+    assertEq(DAG.Fire.Rescue.ActionStep(), 'working')
+
+    -- Halfway through, having done nothing, it is not finished.
+    harness.gameTimer = harness.gameTimer + 6000
+    assertEq(DAG.Fire.Rescue.ActionStep(), 'working')
+
+    -- A perfect run walks the finish line down to the floor.
+    local check = DAG.Fire.Skill.Active()
+    check.hits, check.attempts = 3, 3
+    assertEq(DAG.Fire.Rescue.ActionStep(), 'complete')
+end)
+
+test('a job with no skill check still finishes on the clock', function()
+    loadClient()
+    goOnDuty()
+    Config.Firefighter.skill.enabled = false
+    harness.playerCoords = vector3(0.0, 0.0, 0.0)
+    harness.gameTimer = 1000
+
+    fire('fire:actionStarted', 'treat', 'v1', 10000, 'Treat', 5000)
+    harness.gameTimer = harness.gameTimer + 6000
+    assertEq(DAG.Fire.Rescue.ActionStep(), 'working', 'the floor is not enough on its own')
+
+    harness.gameTimer = harness.gameTimer + 5000
+    assertEq(DAG.Fire.Rescue.ActionStep(), 'complete')
+end)
+
+test('walking away cancels the check with the job', function()
+    loadClient()
+    goOnDuty()
+    harness.playerCoords = vector3(0.0, 0.0, 0.0)
+    fire('fire:actionStarted', 'treat', 'v1', 10000, 'Treat', 5000)
+    assertTrue(DAG.Fire.Skill.Active() ~= nil)
+
+    harness.playerCoords = vector3(50.0, 0.0, 0.0)
+    assertEq(DAG.Fire.Rescue.ActionStep(), 'cancelled')
+    assertNil(DAG.Fire.Skill.Active())
 end)
 
 -- Crew ------------------------------------------------------------------------

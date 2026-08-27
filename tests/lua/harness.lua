@@ -30,6 +30,7 @@ function harness.reset()
     harness.drawnMarkers = {}
     harness.helpText = {}
     harness.controlsReleased = {}
+    harness.controlsPressed = {}
     harness.playerCoords = nil
     harness.localEvents = {}
     harness.commands = {}
@@ -226,6 +227,7 @@ function _G.BeginTextCommandDisplayHelp() end
 function _G.AddTextComponentSubstringPlayerName(text) table.insert(harness.helpText, text) end
 function _G.EndTextCommandDisplayHelp() end
 function _G.IsControlJustReleased(_, key) return harness.controlsReleased[key] == true end
+function _G.IsControlJustPressed(_, key) return harness.controlsPressed[key] == true end
 function _G.SendNUIMessage(payload)
     table.insert(harness.nuiMessages, payload)
 end

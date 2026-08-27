@@ -326,15 +326,20 @@ end
 -- The server has accepted the start and told us how long it takes. The client
 -- runs the clock only to draw the bar; the completion is checked again server
 -- side before it counts.
-RegisterNetEvent(Bridge.Event('fire:actionStarted'), function(kind, targetId, duration, label)
+RegisterNetEvent(Bridge.Event('fire:actionStarted'), function(kind, targetId, duration, label, fastest)
     action = {
         kind = kind,
         targetId = targetId,
         label = label,
         duration = duration,
+        -- The floor the server set. Working the job well walks the finish line
+        -- down towards it; ignoring the skill check just takes the full time.
+        fastest = tonumber(fastest) or duration,
         startedAt = GetGameTimer(),
         origin = Shared.Coords(GetEntityCoords(PlayerPedId()))
     }
+
+    if Fire.Skill and Fire.Skill.Enabled() then Fire.Skill.Begin(duration) end
 
     if requestAnim('amb@medic@standing@kneel@base') then
         TaskPlayAnim(PlayerPedId(), 'amb@medic@standing@kneel@base', 'base', 8.0, -8.0, -1, 1, 0.0, false, false, false)
@@ -349,15 +354,21 @@ function Rescue.ActionStep()
     local coords = Shared.Coords(GetEntityCoords(PlayerPedId()))
     if not coords or Shared.Distance(coords, action.origin) > 3.0 then
         action = nil
+        if Fire.Skill then Fire.Skill.Cancel() end
         ClearPedTasks(PlayerPedId())
         TriggerServerEvent(Bridge.Event('fire:cancelAction'))
         Bridge.Notify('You moved away before the job was done.', 'error')
         return 'cancelled'
     end
 
-    if GetGameTimer() - action.startedAt < action.duration then return 'working' end
+    -- How well the check is going decides where between the floor and the full
+    -- time this finishes.
+    local score = Fire.Skill and Fire.Skill.Enabled() and Fire.Skill.Score() or 0
+    local target = action.duration - (action.duration - action.fastest) * score
+    if GetGameTimer() - action.startedAt < target then return 'working' end
 
     action = nil
+    if Fire.Skill then Fire.Skill.Finish() end
     ClearPedTasks(PlayerPedId())
     TriggerServerEvent(Bridge.Event('fire:completeAction'))
     return 'complete'
@@ -365,7 +376,10 @@ end
 
 function Rescue.ActionProgress()
     if not action then return nil end
-    return Shared.Clamp((GetGameTimer() - action.startedAt) / action.duration, 0, 1),
+
+    local score = Fire.Skill and Fire.Skill.Enabled() and Fire.Skill.Score() or 0
+    local target = action.duration - (action.duration - action.fastest) * score
+    return Shared.Clamp((GetGameTimer() - action.startedAt) / math.max(1, target), 0, 1),
         action.label or action.kind
 end
 

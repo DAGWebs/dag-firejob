@@ -288,9 +288,10 @@ end)
 on('fire:beginAction', function(source, callId, kind, targetId)
     if type(callId) ~= 'string' or type(kind) ~= 'string' or type(targetId) ~= 'string' then return end
 
-    local ok, reason, duration, stage = Incident.BeginAction(source, callId, kind, targetId)
+    local ok, reason, duration, stage, fastest = Incident.BeginAction(source, callId, kind, targetId)
     if not ok then return fail(source, reason) end
-    TriggerClientEvent(Bridge.Event('fire:actionStarted'), source, kind, targetId, duration, stage and stage.label or nil)
+    TriggerClientEvent(Bridge.Event('fire:actionStarted'), source, kind, targetId, duration,
+        stage and stage.label or nil, fastest)
 end)
 
 on('fire:cancelAction', function(source)
@@ -302,6 +303,30 @@ on('fire:completeAction', function(source)
     if not ok then
         if reason ~= 'no_action' then fail(source, reason) end
         return
+    end
+
+    -- Finishing a job faster than the clock is worth something, capped so it
+    -- is a bonus for working well and not a second wage.
+    if (result.saved or 0) > 0 then
+        local skill = Shared.Settings().skill or {}
+        local bonus = skill.bonus or {}
+        local pay = math.floor((tonumber(bonus.pay) or 0) * result.saved)
+        if pay > 0 then
+            local funded = Fire.Billing.Fund(pay, 'skill')
+            if funded > 0 then
+                Bridge.AddMoney(source, (Shared.Settings().pay or {}).account or 'bank',
+                    funded, 'firefighter:skill')
+            end
+        end
+
+        local xp = math.floor((tonumber(bonus.xp) or 0) * result.saved)
+        if xp > 0 then
+            local profile = State.Profile(source)
+            if profile then
+                profile.xp = profile.xp + xp
+                State.SaveProfile(profile)
+            end
+        end
     end
 
     if result.kind == 'contain' then
