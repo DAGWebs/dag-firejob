@@ -22,50 +22,76 @@ end
 Duty.MenuId = menuId
 
 -- Station fixtures ----------------------------------------------------------
+--
+-- A station's fixtures are lists, not single points: a hall can have two duty
+-- boards, three bay doors, and a locker room at each end. Everything is
+-- registered from the current config and can be torn down and rebuilt, so the
+-- in-game editor takes effect without a restart.
+
+local fixtures, stationBlips = {}, {}
+
+local function register(id, entry)
+    entry.id = id
+    fixtures[id] = true
+    DAG.Interactions.Register(entry)
+end
+
+local function fixtureId(kind, stationId, index)
+    return ('%s:%s:%s:%d'):format(Bridge.namespace, kind, stationId, index)
+end
+
+local function clearFixtures()
+    for id in pairs(fixtures) do DAG.Interactions.Remove(id) end
+    for _, blip in ipairs(stationBlips) do RemoveBlip(blip) end
+    fixtures, stationBlips = {}, {}
+end
 
 local function registerStation(station)
-    DAG.Interactions.Register({
-        id = ('%s:duty:%s'):format(Bridge.namespace, station.id),
-        coords = station.duty or station.coords,
-        label = 'Press ~INPUT_CONTEXT~ to clock on or off',
-        distance = 2.0,
-        onSelect = function() TriggerServerEvent(Bridge.Event('fire:toggleDuty')) end
-    })
+    for index, point in ipairs(Shared.Points(station, 'duty')) do
+        register(fixtureId('duty', station.id, index), {
+            coords = point,
+            label = 'Press ~INPUT_CONTEXT~ to clock on or off',
+            distance = 2.0,
+            onSelect = function() TriggerServerEvent(Bridge.Event('fire:toggleDuty')) end
+        })
+    end
 
-    DAG.Interactions.Register({
-        id = ('%s:locker:%s'):format(Bridge.namespace, station.id),
-        coords = station.locker or station.coords,
-        label = 'Press ~INPUT_CONTEXT~ to open the equipment locker',
-        distance = 2.0,
-        canInteract = function() return Client.OnDuty() end,
-        menu = menuId('locker')
-    })
+    for index, point in ipairs(Shared.Points(station, 'locker')) do
+        register(fixtureId('locker', station.id, index), {
+            coords = point,
+            label = 'Press ~INPUT_CONTEXT~ to open the equipment locker',
+            distance = 2.0,
+            canInteract = function() return Client.OnDuty() end,
+            menu = menuId('locker')
+        })
+    end
 
-    DAG.Interactions.Register({
-        id = ('%s:supply:%s'):format(Bridge.namespace, station.id),
-        coords = station.supply or station.coords,
-        label = 'Press ~INPUT_CONTEXT~ to restock air and extinguishers',
-        distance = 2.0,
-        canInteract = function() return Client.OnDuty() end,
-        onSelect = function()
-            TriggerServerEvent(Bridge.Event('fire:refillGear'), 'air')
-            TriggerServerEvent(Bridge.Event('fire:refillGear'), 'extinguisher')
-        end
-    })
+    for index, point in ipairs(Shared.Points(station, 'supply')) do
+        register(fixtureId('supply', station.id, index), {
+            coords = point,
+            label = 'Press ~INPUT_CONTEXT~ to restock air and extinguishers',
+            distance = 2.0,
+            canInteract = function() return Client.OnDuty() end,
+            onSelect = function()
+                TriggerServerEvent(Bridge.Event('fire:refillGear'), 'air')
+                TriggerServerEvent(Bridge.Event('fire:refillGear'), 'extinguisher')
+            end
+        })
+    end
 
-    DAG.Interactions.Register({
-        id = ('%s:garage:%s'):format(Bridge.namespace, station.id),
-        coords = station.garage or station.coords,
-        label = 'Press ~INPUT_CONTEXT~ for the apparatus bay',
-        distance = 3.0,
-        canInteract = function() return Client.OnDuty() end,
-        onSelect = function() Duty.OpenGarage(station.id) end
-    })
+    for index, point in ipairs(Shared.Points(station, 'garage')) do
+        register(fixtureId('garage', station.id, index), {
+            coords = point,
+            label = 'Press ~INPUT_CONTEXT~ for the apparatus bay',
+            distance = 3.0,
+            canInteract = function() return Client.OnDuty() end,
+            onSelect = function() Duty.OpenGarage(station.id) end
+        })
+    end
 
-    if station.office then
-        DAG.Interactions.Register({
-            id = ('%s:office:%s'):format(Bridge.namespace, station.id),
-            coords = station.office,
+    for index, point in ipairs(Shared.Points(station, 'office')) do
+        register(fixtureId('office', station.id, index), {
+            coords = point,
             label = 'Press ~INPUT_CONTEXT~ for the watch office',
             distance = 2.0,
             canInteract = function() return Client.OnDuty() end,
@@ -75,36 +101,59 @@ local function registerStation(station)
         })
     end
 
-    if station.ret then
-        DAG.Interactions.Register({
-            id = ('%s:return:%s'):format(Bridge.namespace, station.id),
-            coords = station.ret,
+    for index, point in ipairs(Shared.Points(station, 'ret')) do
+        register(fixtureId('return', station.id, index), {
+            coords = point,
             label = 'Press ~INPUT_CONTEXT~ to return the apparatus',
             distance = 4.0,
             canInteract = function() return Client.Unit() ~= nil end,
             onSelect = function() TriggerServerEvent(Bridge.Event('fire:returnUnit')) end
         })
     end
+
+    local blip = station.blip
+    local coords = Shared.Coords(station.coords)
+    if blip and coords then
+        local handle = AddBlipForCoord(coords.x, coords.y, coords.z)
+        SetBlipSprite(handle, blip.sprite or 436)
+        SetBlipColour(handle, blip.colour or 49)
+        SetBlipScale(handle, blip.scale or 0.8)
+        SetBlipAsShortRange(handle, true)
+        BeginTextCommandSetBlipName('STRING')
+        AddTextComponentSubstringPlayerName(station.label or station.id)
+        EndTextCommandSetBlipName(handle)
+        stationBlips[#stationBlips + 1] = handle
+    end
+end
+
+-- Rebuilt from scratch every time, so an edited config never leaves a prompt
+-- floating where a bay door used to be.
+function Duty.RegisterFixtures()
+    clearFixtures()
+    if not Shared.Enabled() then return 0 end
+
+    for _, station in ipairs(Shared.Stations()) do registerStation(station) end
+
+    local count = 0
+    for _ in pairs(fixtures) do count = count + 1 end
+    return count
+end
+
+function Duty.Fixtures()
+    return fixtures
 end
 
 CreateThread(function()
-    if not Shared.Enabled() then return end
+    Duty.RegisterFixtures()
+end)
 
-    for _, station in ipairs(Shared.Stations()) do
-        registerStation(station)
+AddEventHandler(Bridge.Event('fire:configChanged'), function()
+    Duty.RegisterFixtures()
+end)
 
-        local blip = station.blip
-        if blip then
-            local handle = AddBlipForCoord(station.coords.x, station.coords.y, station.coords.z)
-            SetBlipSprite(handle, blip.sprite or 436)
-            SetBlipColour(handle, blip.colour or 49)
-            SetBlipScale(handle, blip.scale or 0.8)
-            SetBlipAsShortRange(handle, true)
-            BeginTextCommandSetBlipName('STRING')
-            AddTextComponentSubstringPlayerName(station.label)
-            EndTextCommandSetBlipName(handle)
-        end
-    end
+AddEventHandler('onResourceStop', function(resource)
+    if resource ~= Bridge.namespace then return end
+    clearFixtures()
 end)
 
 -- Apparatus -----------------------------------------------------------------
@@ -134,7 +183,16 @@ RegisterNetEvent(Bridge.Event('fire:spawnUnit'), function(apparatusId, stationId
         return Bridge.Notify('That apparatus model failed to load.', 'error')
     end
 
-    local spawn = station.spawn or { coords = station.garage or station.coords, heading = 0.0 }
+    -- A station can have several bays; the apparatus comes out of whichever
+    -- one the firefighter is standing closest to.
+    local here = Shared.Coords(GetEntityCoords(PlayerPedId()))
+    local spawn, spawnDistance
+    for _, candidate in ipairs(Shared.SpawnPoints(station)) do
+        local distance = here and Shared.Distance(here, candidate.coords) or 0
+        if not spawnDistance or distance < spawnDistance then spawn, spawnDistance = candidate, distance end
+    end
+    if not spawn then return Bridge.Notify('That station has no apparatus bay configured.', 'error') end
+
     local coords = spawn.coords
     local vehicle = CreateVehicle(model, coords.x, coords.y, coords.z, spawn.heading or 0.0, true, false)
     SetModelAsNoLongerNeeded(model)

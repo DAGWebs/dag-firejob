@@ -712,7 +712,7 @@ local function atSupplyPoint(source)
     if not coords then return false end
 
     local station = record.station and Shared.Station(record.station)
-    if station and Shared.Distance(coords, station.supply or station.coords) <= 6.0 then return true end
+    if station and select(2, Shared.NearestPointOf(station, coords, 'supply')) <= 6.0 then return true end
     return select(1, Incident.SupplyFor(source, 'monitor', coords)) ~= nil
 end
 

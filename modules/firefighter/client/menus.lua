@@ -320,6 +320,18 @@ local function mainOptions()
         menu = menuId('departments')
     }
 
+    if context.canConfigure then
+        options[#options + 1] = { title = 'Administration', header = true }
+        options[#options + 1] = {
+            title = 'Configuration',
+            description = 'Stations, departments, incident locations',
+            icon = 'wrench',
+            onSelect = function()
+                if Fire.Editor then Fire.Editor.Open() end
+            end
+        }
+    end
+
     if context.canCommand then
         options[#options + 1] = { title = 'Command', header = true }
         options[#options + 1] = {

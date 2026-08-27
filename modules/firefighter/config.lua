@@ -13,6 +13,18 @@ local resource = GetCurrentResourceName()
 Config.Firefighter = {
     enabled = true,
 
+    -- In-game configuration -----------------------------------------------
+    -- Stations, departments, incident locations, and any setting addressed by
+    -- a dotted path can be edited from in game by an admin and are stored as
+    -- an override document over this file. `/set fslist` prints what is there.
+    --
+    -- `set` is a short, generic command name: change it if another resource on
+    -- your server already owns it.
+    editor = {
+        enabled = true,
+        command = 'set'
+    },
+
     -- Certifications gate apparatus, extrication, treatment, and containment.
     -- Turn this off for a server that would rather let anyone do anything and
     -- keep the ranks purely cosmetic.

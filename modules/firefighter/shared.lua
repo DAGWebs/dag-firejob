@@ -68,6 +68,131 @@ function Shared.Distance(a, b)
     return math.sqrt(dx * dx + dy * dy + dz * dz)
 end
 
+function Shared.DeepCopy(value, seen)
+    if type(value) ~= 'table' then return value end
+    seen = seen or {}
+    if seen[value] then return seen[value] end
+
+    local copy = {}
+    seen[value] = copy
+    for key, inner in pairs(value) do copy[key] = Shared.DeepCopy(inner, seen) end
+    return copy
+end
+
+-- Dotted paths, so the in-game editor can reach any scalar in the config
+-- without a command per setting.
+function Shared.GetPath(root, path)
+    local cursor = root
+    for segment in tostring(path or ''):gmatch('[^.]+') do
+        if type(cursor) ~= 'table' then return nil end
+        cursor = cursor[tonumber(segment) or segment]
+    end
+    return cursor
+end
+
+function Shared.SetPath(root, path, value)
+    local segments = {}
+    for segment in tostring(path or ''):gmatch('[^.]+') do
+        segments[#segments + 1] = tonumber(segment) or segment
+    end
+    if #segments == 0 then return false end
+
+    local cursor = root
+    for index = 1, #segments - 1 do
+        local key = segments[index]
+        if type(cursor[key]) ~= 'table' then cursor[key] = {} end
+        cursor = cursor[key]
+    end
+    cursor[segments[#segments]] = value
+    return true
+end
+
+-- Station fixtures ---------------------------------------------------------
+
+-- A station fixture is a list of places, not one place: a hall has more than
+-- one bay door and more than one way onto the watch floor. The packaged config
+-- writes single coordinates, so both shapes are accepted and normalized here.
+local function pointList(value)
+    if type(value) ~= 'table' then return {} end
+    if type(value[1]) == 'table' then
+        local list = {}
+        for _, entry in ipairs(value) do
+            local coords = Shared.Coords(entry)
+            if coords then list[#list + 1] = coords end
+        end
+        return list
+    end
+
+    local single = Shared.Coords(value)
+    return single and { single } or {}
+end
+
+Shared.PointList = pointList
+
+-- The fixture kinds a station can carry, in the order the editor lists them.
+Shared.PointKinds = { 'duty', 'locker', 'supply', 'garage', 'office', 'ret' }
+
+function Shared.Points(station, kind)
+    if type(station) ~= 'table' then return {} end
+
+    local points = pointList(station[kind])
+    -- A station with no point of this kind falls back to its own position, so
+    -- a half-configured station is still usable rather than silently dead.
+    if #points == 0 and kind ~= 'office' and kind ~= 'ret' then
+        return pointList(station.coords)
+    end
+    return points
+end
+
+-- The nearest fixture of one kind across every station, and the station it
+-- belongs to. This is what "am I standing at a duty point" means now.
+function Shared.NearestPoint(coords, kind, maximum)
+    local bestStation, bestPoint, bestDistance
+    for _, station in ipairs(Shared.Stations()) do
+        for _, point in ipairs(Shared.Points(station, kind)) do
+            local distance = Shared.Distance(coords, point)
+            if distance <= (maximum or math.huge) and (not bestDistance or distance < bestDistance) then
+                bestStation, bestPoint, bestDistance = station, point, distance
+            end
+        end
+    end
+    return bestStation, bestPoint, bestDistance
+end
+
+function Shared.NearestPointOf(station, coords, kind)
+    local bestPoint, bestDistance
+    for _, point in ipairs(Shared.Points(station, kind)) do
+        local distance = Shared.Distance(coords, point)
+        if not bestDistance or distance < bestDistance then bestPoint, bestDistance = point, distance end
+    end
+    return bestPoint, bestDistance or math.huge
+end
+
+-- Vehicle spawns carry a heading as well as a position, so they are their own
+-- shape rather than a plain point list.
+function Shared.SpawnPoints(station)
+    if type(station) ~= 'table' then return {} end
+
+    local value = station.spawn
+    local list = {}
+
+    if type(value) == 'table' then
+        local entries = value.coords and { value } or value
+        for _, entry in ipairs(entries) do
+            local coords = Shared.Coords(entry.coords or entry)
+            if coords then
+                list[#list + 1] = { coords = coords, heading = tonumber(entry.heading) or 0.0 }
+            end
+        end
+    end
+
+    if #list == 0 then
+        local fallback = Shared.Points(station, 'garage')[1]
+        if fallback then list[1] = { coords = fallback, heading = 0.0 } end
+    end
+    return list
+end
+
 -- Catalogue lookups --------------------------------------------------------
 
 local function findById(list, id)
@@ -395,6 +520,81 @@ function Shared.FormatMoney(amount)
         grouped, replacements = grouped:gsub('^(%d+)(%d%d%d)', '%1,%2')
     end
     return ('%s$%s'):format((tonumber(amount) or 0) < 0 and '-' or '', grouped)
+end
+
+-- Live configuration -------------------------------------------------------
+--
+-- The packaged config is the baseline; anything edited in game is stored as a
+-- sparse override document and merged back over it. Both sides run the same
+-- merge, so a client and the server always agree on where the bay doors are.
+
+-- Captured before anything can edit it, so applying overrides is always
+-- baseline-plus-changes rather than change-on-top-of-change.
+Shared.defaults = Shared.DeepCopy(Config.Firefighter or {})
+
+-- Catalogue lists are merged by id rather than by position: a server owner
+-- inserting a station at the top of config.lua must not silently rename
+-- somebody else's.
+local function mergeById(packaged, patches, order)
+    local result, index = {}, {}
+
+    for _, entry in ipairs(packaged or {}) do
+        local copy = Shared.DeepCopy(entry)
+        index[entry.id] = copy
+        result[#result + 1] = copy
+    end
+
+    local added = {}
+    for id, patch in pairs(patches or {}) do
+        local target = index[id]
+        if not target then
+            target = { id = id }
+            index[id] = target
+            added[#added + 1] = target
+        end
+        for key, value in pairs(patch) do
+            if key ~= 'removed' then target[key] = Shared.DeepCopy(value) end
+        end
+        target.removed = patch.removed == true
+    end
+
+    -- New entries land in a stable order so two servers with the same document
+    -- produce the same list.
+    table.sort(added, function(a, b) return tostring(a.id) < tostring(b.id) end)
+    for _, entry in ipairs(added) do result[#result + 1] = entry end
+
+    local kept = {}
+    for _, entry in ipairs(result) do
+        if not entry.removed then
+            entry.removed = nil
+            kept[#kept + 1] = entry
+        end
+    end
+
+    if order then table.sort(kept, order) end
+    return kept
+end
+
+Shared.MergeById = mergeById
+
+local LISTS = { 'stations', 'departments', 'callTypes', 'apparatus' }
+
+function Shared.ApplyOverrides(overrides)
+    local config = Shared.DeepCopy(Shared.defaults)
+    overrides = overrides or {}
+
+    for _, list in ipairs(LISTS) do
+        config[list] = mergeById(config[list], overrides[list])
+    end
+
+    -- Anything else is addressed by dotted path, which is what makes "every
+    -- setting is editable" true rather than a list of the ones I thought of.
+    for path, value in pairs(overrides.values or {}) do
+        Shared.SetPath(config, path, Shared.DeepCopy(value))
+    end
+
+    Config.Firefighter = config
+    return config
 end
 
 -- Profiles -----------------------------------------------------------------

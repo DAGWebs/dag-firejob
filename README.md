@@ -474,10 +474,10 @@ modules/
 └── firefighter/           the bundled firefighter job (see below)
     ├── config.lua         departments, stations, run card, ranks, training
     ├── shared.lua         departments, ranks, suppression arithmetic
-    ├── server/            persistence, state, simulation, dispatch, hiring,
-    │                      academy, incident sources, net API
-    └── client/            mirror, rendering, hose, rescue, uniform, events,
-                           station, academy, HUD, menus
+    ├── server/            persistence, live config editor, state, simulation,
+    │                      dispatch, hiring, academy, incident sources, net API
+    └── client/            config, mirror, rendering, hose, rescue, uniform,
+                           events, station, academy, HUD, menus
 sql/                       schema, plus the ESX job and item imports
 install/                   per-framework job and item definitions to paste in
 ```
@@ -489,7 +489,7 @@ stub, so the tests exercise the code the server runs rather than matching
 source text:
 
 ```bash
-lua5.4 tests/lua/run.lua              # 290 behavioural tests
+lua5.4 tests/lua/run.lua              # 324 behavioural tests
 python3 -m unittest discover -s tests # manifest/adapter/config invariants
 luacheck .                            # lint
 find . -name '*.lua' -not -path './.git/*' -print0 | xargs -0 -n1 luac5.4 -p
@@ -503,7 +503,8 @@ crash and fire signals its incident detectors watch. The firefighter specs drive
 the real simulation through it — `spec_firefighter_shared.lua`,
 `spec_firefighter_server.lua`, `spec_firefighter_client.lua`, and
 `spec_firefighter_database.lua`, which runs the persistence layer against a
-stubbed `oxmysql`. For the menu's appearance, open `tests/ui/preview.html` in a browser. Add a
+stubbed `oxmysql`, and `spec_firefighter_editor.lua`, which drives the in-game
+editor through the same command handler a player types into. For the menu's appearance, open `tests/ui/preview.html` in a browser. Add a
 `tests/lua/spec_*.lua` file and register it in `tests/lua/run.lua` to cover new
 behaviour. All four commands run in CI on every push.
 
@@ -601,6 +602,64 @@ to `fd` for `/fd:duty`.
 | `<prefix>:fdcall <type> [here]` | Admins | Dispatch a call |
 | `<prefix>:fdxp <id> <amount>` | Admins | Adjust an XP total |
 
+### Configuring it in game
+
+Everything in `modules/firefighter/config.lua` is a baseline. What an admin
+changes in game is stored as an override document, merged back over that
+baseline, and pushed to every client, so a station moves, gains a second bay
+door, or disappears without touching a file or restarting the resource.
+
+Positions always come from the editing player's own ped. No command takes a
+coordinate, so there is nothing to mistype and nothing to spoof: you stand where
+you want the thing and name it.
+
+```
+/set fsstation davis Station 7 - Davis   create or move a station here
+/set fsduty davis                        add a duty point here
+/set fsgarage davis                      add a bay door here
+/set fsvehiclespawn davis                add an apparatus bay, facing your way
+/set fslocker|fssupply|fsoffice|fsreturn davis
+/set fsdepartment davis lsfd             move a station between departments
+/set fsblip davis 436 49 0.8
+
+/set fsdept lsfd Los Santos Fire          create or rename a department
+/set fsdeptjob lsfd lsfd                  which framework job it uses
+/set fsdeptzone lsfd 3400                 jurisdiction, centred where you stand
+/set fsdeptaid lsfd safd                  who it calls for mutual aid
+/set fsdeptuniform lsfd city
+
+/set fscall structure The old mill        add an incident location here
+/set fsacademy | /set fsdrill | /set fshospital
+
+/set fsconfig dispatch.maxActive 5        any setting, by dotted path
+/set fslist stations | /set fslist station davis | /set fslist config
+/set fsremove duty davis 2                remove one point by its number
+/set fsremove station davis               remove a whole station
+/set fsremove config dispatch.maxActive   back to the packaged default
+/set fsreset                              revert every in-game change
+/set fsexport                             print the overrides to the console
+```
+
+**Every station fixture is a list.** A hall can have two duty boards, three bay
+doors, and a locker room at each end: `fsduty` adds one, it does not replace the
+last. `/set fslist station davis` numbers them, and `/set fsremove duty davis 2`
+takes the second one away. The packaged single-coordinate format still works —
+it reads as a list of one.
+
+There is a menu for the same thing, under **Configuration** in the department
+menu (`F6`) for anyone holding the admin ACE: browse to a station, walk to where
+you want something, and pick "add here", or pick any existing point to remove
+it. Settings that are not places are edited with `fsconfig`.
+
+Deleting something the packaged config ships leaves a tombstone in the override
+document, because `config.lua` is re-read on every start and would otherwise
+bring it back. Deleting something added in game just removes it.
+
+`set` is a short, generic command name — the one this asks for. If another
+resource on your server already owns it, change
+`Config.Firefighter.editor.command`, or set `editor.enabled = false` to turn the
+whole thing off and go back to editing files.
+
 ### Where authority sits
 
 Everything a client can ask for is re-checked against state the server owns:
@@ -623,6 +682,9 @@ Everything a client can ask for is re-checked against state the server owns:
   of who arrived and how much water they put on it.
 - The apparatus tank lives on the server. A spawned vehicle is only registered
   once the server has confirmed the entity really is the model it authorized.
+- The in-game editor is admin-only, on the command and on the menu path alike,
+  and it reads the editing player's position from their ped like everything
+  else.
 
 The one thing taken on trust is the position of a hydrant prop, because the
 server cannot enumerate map objects; the player and their apparatus still have

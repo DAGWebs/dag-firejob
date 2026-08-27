@@ -3,6 +3,7 @@
 -- allowed to point at.
 
 local CLIENT_FILES = {
+    'modules/firefighter/client/editor.lua',
     'modules/firefighter/client/state.lua',
     'modules/firefighter/client/fire.lua',
     'modules/firefighter/client/hose.lua',
@@ -523,6 +524,64 @@ test('an action that runs its full time reports completion', function()
     assertNil(DAG.Fire.Rescue.ActionStep(), 'and it only fires once')
 end)
 
+-- Live configuration -----------------------------------------------------------
+
+test('an override document from the server changes the live config', function()
+    loadClient()
+    assertEq(DAG.Fire.Shared.Settings().dispatch.maxActive, 2)
+
+    fire('fire:config', { values = { ['dispatch.maxActive'] = 6 } })
+    assertEq(DAG.Fire.Shared.Settings().dispatch.maxActive, 6)
+
+    fire('fire:config', {})
+    assertEq(DAG.Fire.Shared.Settings().dispatch.maxActive, 2, 'and reverts when it is taken away')
+end)
+
+-- Editing a station has to move the prompts, or the config and the world stop
+-- agreeing until somebody restarts the resource.
+test('a station edited on the server moves its prompts here', function()
+    loadClient()
+    DAG.Fire.Duty.RegisterFixtures()
+
+    local prefix = DAG.Framework.namespace
+    fire('fire:config', {
+        stations = { davis = { duty = { { x = 900.0, y = 900.0, z = 30.0 }, { x = 910.0, y = 900.0, z = 30.0 } } } }
+    })
+
+    assertEq(DAG.Interactions.Get(('%s:duty:davis:1'):format(prefix)).coords.x, 900.0)
+    assertTrue(DAG.Interactions.Get(('%s:duty:davis:2'):format(prefix)) ~= nil)
+end)
+
+test('a station deleted on the server takes its prompts with it', function()
+    loadClient()
+    DAG.Fire.Duty.RegisterFixtures()
+    local prefix = DAG.Framework.namespace
+    assertTrue(DAG.Interactions.Get(('%s:duty:davis:1'):format(prefix)) ~= nil)
+
+    fire('fire:config', { stations = { davis = { removed = true } } })
+    assertNil(DAG.Interactions.Get(('%s:duty:davis:1'):format(prefix)))
+    assertNil(DAG.Fire.Shared.Station('davis'))
+end)
+
+test('the editor menu lists every point with a way to remove it', function()
+    loadClient()
+    fire('fire:config', {
+        stations = { davis = { garage = { { x = 1.0, y = 0.0, z = 0.0 }, { x = 2.0, y = 0.0, z = 0.0 } } } }
+    })
+    DAG.Fire.Editor.Build()
+
+    local menu = DAG.Menu.Get(('%s:fire:editor:station:davis'):format(DAG.Framework.namespace))
+    assertTrue(menu ~= nil)
+
+    local removals, adds = 0, 0
+    for _, option in ipairs(menu.options) do
+        if option.badge == 'Remove' then removals = removals + 1 end
+        if option.title:find('Add a', 1, true) then adds = adds + 1 end
+    end
+    assertTrue(removals >= 2, 'both bay doors can be removed')
+    assertEq(adds, #DAG.Fire.Shared.PointKinds + 1, 'every fixture kind, plus the apparatus bay')
+end)
+
 -- Interface ------------------------------------------------------------------
 
 test('the station fixtures and the menu keybind are registered', function()
@@ -531,10 +590,53 @@ test('the station fixtures and the menu keybind are registered', function()
 
     local prefix = DAG.Framework.namespace
     local station = DAG.Fire.Shared.Stations()[1].id
-    assertTrue(DAG.Interactions.Get(('%s:duty:%s'):format(prefix, station)) ~= nil)
-    assertTrue(DAG.Interactions.Get(('%s:garage:%s'):format(prefix, station)) ~= nil)
+    assertTrue(DAG.Interactions.Get(('%s:duty:%s:1'):format(prefix, station)) ~= nil)
+    assertTrue(DAG.Interactions.Get(('%s:garage:%s:1'):format(prefix, station)) ~= nil)
     assertTrue(harness.commands[prefix .. ':fdmenu'] ~= nil)
     assertEq(harness.keyMappings[1], prefix .. ':fdmenu')
+end)
+
+-- A hall has more than one bay door. Every fixture is a list now, and a second
+-- duty point is a second prompt, not a replacement for the first.
+test('a station registers a prompt for every point of every fixture', function()
+    loadClient()
+    local station = DAG.Fire.Shared.Stations()[1]
+    station.duty = { { x = 10.0, y = 0.0, z = 0.0 }, { x = 20.0, y = 0.0, z = 0.0 } }
+
+    DAG.Fire.Duty.RegisterFixtures()
+
+    local prefix = DAG.Framework.namespace
+    assertTrue(DAG.Interactions.Get(('%s:duty:%s:1'):format(prefix, station.id)) ~= nil)
+    assertTrue(DAG.Interactions.Get(('%s:duty:%s:2'):format(prefix, station.id)) ~= nil)
+    assertEq(DAG.Interactions.Get(('%s:duty:%s:2'):format(prefix, station.id)).coords.x, 20.0)
+end)
+
+-- Rebuilding has to clear what it replaced, or an edited station leaves a
+-- prompt floating where a bay door used to be.
+test('rebuilding the fixtures drops the ones that went away', function()
+    loadClient()
+    local station = DAG.Fire.Shared.Stations()[1]
+    station.duty = { { x = 10.0, y = 0.0, z = 0.0 }, { x = 20.0, y = 0.0, z = 0.0 } }
+    DAG.Fire.Duty.RegisterFixtures()
+
+    station.duty = { { x = 10.0, y = 0.0, z = 0.0 } }
+    DAG.Fire.Duty.RegisterFixtures()
+
+    local prefix = DAG.Framework.namespace
+    assertTrue(DAG.Interactions.Get(('%s:duty:%s:1'):format(prefix, station.id)) ~= nil)
+    assertNil(DAG.Interactions.Get(('%s:duty:%s:2'):format(prefix, station.id)))
+end)
+
+test('a config change rebuilds the fixtures without a restart', function()
+    loadClient()
+    DAG.Fire.Duty.RegisterFixtures()
+    local before = harness.count(DAG.Fire.Duty.Fixtures())
+
+    local station = DAG.Fire.Shared.Stations()[1]
+    station.garage = { { x = 1.0, y = 0.0, z = 0.0 }, { x = 2.0, y = 0.0, z = 0.0 }, { x = 3.0, y = 0.0, z = 0.0 } }
+    fire('fire:configChanged')
+
+    assertTrue(harness.count(DAG.Fire.Duty.Fixtures()) > before)
 end)
 
 test('the dispatch board lists every open call with a submenu', function()

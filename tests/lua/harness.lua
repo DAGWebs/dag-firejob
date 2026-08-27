@@ -43,6 +43,7 @@ function harness.reset()
     harness.entityCoords = {}
     harness.entityModels = {}
     harness.entityHealth = {}
+    harness.entityHeadings = {}
     harness.playerPeds = {}
     harness.players = nil
     harness.netIds = {}
@@ -371,6 +372,7 @@ function _G.DeleteEntity(entity)
     harness.entityCoords[entity] = nil
 end
 function _G.GetEntityModel(entity) return harness.entityModels[entity] end
+function _G.GetEntityHeading(entity) return harness.entityHeadings[entity] or 0.0 end
 function _G.GetHashKey(value) return value end
 function _G.SetModelAsNoLongerNeeded() end
 function _G.RequestModel() end

@@ -28,7 +28,7 @@ read_globals = {
     -- server-side entity access, used by the firefighter job to check where a
     -- player and their apparatus really are before trusting a request
     'GetPlayerPed', 'NetworkGetEntityFromNetworkId', 'DoesEntityExist',
-    'GetEntityModel', 'DeleteEntity', 'GetHashKey',
+    'GetEntityModel', 'DeleteEntity', 'GetHashKey', 'GetEntityHeading',
     -- client natives used by the firefighter job
     'AddBlipForCoord', 'AttachEntityToEntity', 'BeginTextCommandDisplayText',
     'BeginTextCommandSetBlipName', 'ClearPedTasks', 'CreatePed', 'CreateVehicle',

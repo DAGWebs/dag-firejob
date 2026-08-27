@@ -90,13 +90,25 @@ end)
 
 -- Fixtures --------------------------------------------------------------------
 
-CreateThread(function()
-    if not Shared.Enabled() or settings().enabled == false then return end
+local fixtures = {}
+
+local function clearFixtures()
+    for id in pairs(fixtures) do DAG.Interactions.Remove(id) end
+    for _, blip in ipairs(fixtures.blips or {}) do RemoveBlip(blip) end
+    fixtures = {}
+end
+
+-- Rebuilt on every config change, so moving the academy in game moves the
+-- prompts with it.
+function Academy.RegisterFixtures()
+    clearFixtures()
+    if not Shared.Enabled() or settings().enabled == false then return 0 end
 
     local classroom = Shared.Coords(settings().classroom or settings().coords)
     local drill = Shared.Coords(settings().drill)
 
     if classroom then
+        fixtures[('%s:academy'):format(Bridge.namespace)] = true
         DAG.Interactions.Register({
             id = ('%s:academy'):format(Bridge.namespace),
             coords = classroom,
@@ -110,6 +122,7 @@ CreateThread(function()
     end
 
     if drill then
+        fixtures[('%s:academy:drill'):format(Bridge.namespace)] = true
         DAG.Interactions.Register({
             id = ('%s:academy:drill'):format(Bridge.namespace),
             coords = drill,
@@ -131,5 +144,25 @@ CreateThread(function()
         BeginTextCommandSetBlipName('STRING')
         AddTextComponentSubstringPlayerName(settings().label or 'Fire academy')
         EndTextCommandSetBlipName(handle)
+        fixtures.blips = { handle }
     end
+
+    local count = 0
+    for key in pairs(fixtures) do
+        if key ~= 'blips' then count = count + 1 end
+    end
+    return count
+end
+
+CreateThread(function()
+    Academy.RegisterFixtures()
+end)
+
+AddEventHandler(Bridge.Event('fire:configChanged'), function()
+    Academy.RegisterFixtures()
+end)
+
+AddEventHandler('onResourceStop', function(resource)
+    if resource ~= Bridge.namespace then return end
+    clearFixtures()
 end)

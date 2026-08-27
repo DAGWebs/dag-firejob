@@ -115,11 +115,7 @@ end
 local function nearestDutyPoint(source)
     local coords = State.PlayerCoords(source)
     if not coords then return nil end
-
-    for _, station in ipairs(Shared.Stations()) do
-        if Shared.Distance(coords, station.duty or station.coords) <= 4.0 then return station end
-    end
-    return nil
+    return select(1, Shared.NearestPoint(coords, 'duty', 4.0))
 end
 
 local function goOffDuty(source, quiet)
@@ -353,7 +349,7 @@ on('fire:requestUnit', function(source, apparatusId, stationId)
     end
 
     local coords = State.PlayerCoords(source)
-    if not coords or Shared.Distance(coords, station.garage or station.coords) > 25.0 then
+    if not coords or select(2, Shared.NearestPointOf(station, coords, 'garage')) > 25.0 then
         return fail(source, 'out_of_range')
     end
 
@@ -540,7 +536,9 @@ Bridge.RegisterCallback(Bridge.Event('fire:context'), function(source, reply)
             duration = enrolment.duration,
             startedAt = enrolment.startedAt
         } or nil,
-        canCommand = departmentId ~= nil and Departments.CanCommand(source, departmentId) or false
+        canCommand = departmentId ~= nil and Departments.CanCommand(source, departmentId) or false,
+        canConfigure = (Shared.Settings().editor or {}).enabled ~= false
+            and DAG.Access.Allowed(source, Shared.Policy(nil, 'admin'), 'admin')
     })
 end)
 
