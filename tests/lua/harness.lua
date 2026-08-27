@@ -37,6 +37,32 @@ function harness.reset()
     harness.nuiMessages = {}
     harness.nuiCallbacks = {}
     harness.nuiFocus = nil
+    -- Entity world used by the firefighter job: peds, vehicles, blips, script
+    -- fires, and the weapons/animations a client asks for.
+    harness.entities = {}
+    harness.entityCoords = {}
+    harness.entityModels = {}
+    harness.entityHealth = {}
+    harness.playerPeds = {}
+    harness.netIds = {}
+    harness.nextEntity = 100
+    harness.nextBlip = 1
+    harness.nextFire = 1
+    harness.blips = {}
+    harness.scriptFires = {}
+    harness.weapons = {}
+    harness.animations = {}
+    harness.attachments = {}
+    harness.drawnText = {}
+    harness.drawnRects = {}
+    harness.waypoints = {}
+    harness.keyMappings = {}
+    harness.pedShooting = false
+    harness.forwardVector = { x = 1.0, y = 0.0, z = 0.0 }
+    harness.closestObject = nil
+    harness.modelsLoaded = true
+    harness.animDictsLoaded = true
+    harness.ptfxLoaded = true
     _G.LocalPlayer = { state = {} }
 
     _G.DAG = nil
@@ -166,7 +192,11 @@ _G.LocalPlayer = { state = {} }
 function _G.PlayerId() return 1 end
 function _G.GetPlayerServerId() return 1 end
 function _G.PlayerPedId() return 1 end
-function _G.GetEntityCoords() return harness.playerCoords or vector3(0.0, 0.0, 0.0) end
+function _G.GetEntityCoords(entity)
+    local coords = entity ~= nil and harness.entityCoords[entity]
+    if coords then return coords end
+    return harness.playerCoords or vector3(0.0, 0.0, 0.0)
+end
 function _G.DrawMarker(kind, x, y, z)
     table.insert(harness.drawnMarkers, { kind = kind, coords = vector3(x, y, z) })
 end
@@ -230,12 +260,18 @@ function harness.loadServer(opts)
     opts = opts or {}
     harness.loadConfig()
     harness.load('bridge/shared.lua')
+    -- Shared scripts that sit between the bridge and the modules, matching the
+    -- shared_scripts order in fxmanifest.lua.
+    for _, file in ipairs(opts.shared or {}) do harness.load(file) end
     harness.load('bridge/server.lua')
     for _, adapter in ipairs(opts.adapters or { 'standalone' }) do
         harness.load('bridge/server/' .. adapter .. '.lua')
     end
     for _, module in ipairs(opts.modules or {}) do
         harness.load('modules/' .. module .. '/server.lua')
+    end
+    for _, file in ipairs(opts.files or {}) do
+        harness.load(file)
     end
     return _G.DAG
 end
@@ -244,6 +280,7 @@ function harness.loadClient(opts)
     opts = opts or {}
     harness.loadConfig()
     harness.load('bridge/shared.lua')
+    for _, file in ipairs(opts.shared or {}) do harness.load(file) end
     harness.load('bridge/client.lua')
     for _, adapter in ipairs(opts.adapters or { 'standalone' }) do
         harness.load('bridge/client/' .. adapter .. '.lua')
@@ -266,6 +303,152 @@ function harness.outputContains(needle)
         if line:find(needle, 1, true) then return true end
     end
     return false
+end
+
+-- Entity, blip, fire, and ped natives -------------------------------------
+--
+-- The firefighter job reads the world through these on both sides: the server
+-- checks where a player and their apparatus really are, and the client renders
+-- fires, victims, and blips from what dispatch reports.
+
+local function newEntity(model, coords)
+    harness.nextEntity = harness.nextEntity + 1
+    local entity = harness.nextEntity
+    harness.entities[entity] = true
+    harness.entityModels[entity] = model
+    if coords then harness.entityCoords[entity] = coords end
+    return entity
+end
+
+harness.newEntity = newEntity
+
+-- Places a player's ped in the world so server-side distance checks resolve.
+function harness.placePlayer(playerSource, coords)
+    local ped = harness.playerPeds[playerSource]
+    if not ped then
+        ped = newEntity('player', coords)
+        harness.playerPeds[playerSource] = ped
+    end
+    harness.entityCoords[ped] = coords
+    return ped
+end
+
+function harness.registerNetworkedEntity(netId, entity)
+    harness.netIds[netId] = entity
+    return entity
+end
+
+function _G.GetPlayerPed(playerSource) return harness.playerPeds[playerSource] or 0 end
+function _G.DoesEntityExist(entity) return harness.entities[entity] == true end
+function _G.DeleteEntity(entity)
+    harness.entities[entity] = nil
+    harness.entityCoords[entity] = nil
+end
+function _G.GetEntityModel(entity) return harness.entityModels[entity] end
+function _G.GetHashKey(value) return value end
+function _G.SetModelAsNoLongerNeeded() end
+function _G.RequestModel() end
+function _G.HasModelLoaded() return harness.modelsLoaded == true end
+function _G.RequestAnimDict() end
+function _G.HasAnimDictLoaded() return harness.animDictsLoaded == true end
+function _G.RequestNamedPtfxAsset() end
+function _G.HasNamedPtfxAssetLoaded() return harness.ptfxLoaded == true end
+function _G.UseParticleFxAssetNextCall() end
+function _G.StartParticleFxNonLoopedAtCoord() end
+
+function _G.NetworkGetEntityFromNetworkId(netId) return harness.netIds[netId] or 0 end
+function _G.NetworkGetNetworkIdFromEntity(entity)
+    harness.netIds[entity] = entity
+    return entity
+end
+
+function _G.CreateVehicle(model, x, y, z)
+    return newEntity(model, vector3(x, y, z))
+end
+function _G.CreatePed(_, model, x, y, z)
+    return newEntity(model, vector3(x, y, z))
+end
+function _G.SetVehicleOnGroundProperly() end
+function _G.SetVehicleEngineOn() end
+function _G.SetVehicleNumberPlateText() end
+function _G.SetEntityAsMissionEntity() end
+function _G.SetEntityInvincible() end
+function _G.SetBlockingOfNonTemporaryEvents() end
+function _G.FreezeEntityPosition() end
+function _G.TaskWarpPedIntoVehicle() end
+function _G.GetPedBoneIndex() return 0 end
+function _G.AttachEntityToEntity(entity, target)
+    harness.attachments[entity] = target
+end
+function _G.DetachEntity(entity) harness.attachments[entity] = nil end
+function _G.TaskPlayAnim(entity, dictionary, animation)
+    table.insert(harness.animations, { entity = entity, dict = dictionary, anim = animation })
+end
+function _G.ClearPedTasks(entity)
+    table.insert(harness.animations, { entity = entity, cleared = true })
+end
+
+function _G.GetEntityHealth(entity) return harness.entityHealth[entity] or 200 end
+function _G.SetEntityHealth(entity, health) harness.entityHealth[entity] = health end
+
+function _G.GetEntityForwardVector()
+    local forward = harness.forwardVector
+    return vector3(forward.x, forward.y, forward.z)
+end
+function _G.IsPedShooting() return harness.pedShooting == true end
+function _G.GiveWeaponToPed(ped, weapon) harness.weapons[ped] = weapon end
+function _G.RemoveWeaponFromPed(ped) harness.weapons[ped] = nil end
+function _G.SetCurrentPedWeapon() end
+function _G.GetClosestObjectOfType() return harness.closestObject or 0 end
+
+function _G.StartScriptFire(x, y, z, children)
+    local handle = harness.nextFire
+    harness.nextFire = harness.nextFire + 1
+    harness.scriptFires[handle] = { coords = vector3(x, y, z), children = children }
+    return handle
+end
+function _G.RemoveScriptFire(handle) harness.scriptFires[handle] = nil end
+
+function _G.AddBlipForCoord(x, y, z)
+    local handle = harness.nextBlip
+    harness.nextBlip = harness.nextBlip + 1
+    harness.blips[handle] = { coords = vector3(x, y, z) }
+    return handle
+end
+function _G.RemoveBlip(handle) harness.blips[handle] = nil end
+local function blipField(field)
+    return function(handle, value)
+        if harness.blips[handle] then harness.blips[handle][field] = value end
+    end
+end
+_G.SetBlipSprite = blipField('sprite')
+_G.SetBlipColour = blipField('colour')
+_G.SetBlipScale = blipField('scale')
+_G.SetBlipAsShortRange = blipField('shortRange')
+_G.SetBlipFlashes = blipField('flashing')
+_G.SetBlipRoute = blipField('route')
+function _G.BeginTextCommandSetBlipName() end
+function _G.EndTextCommandSetBlipName(handle)
+    if harness.blips[handle] then harness.blips[handle].named = true end
+end
+function _G.SetNewWaypoint(x, y) table.insert(harness.waypoints, { x = x, y = y }) end
+function _G.RegisterKeyMapping(command) table.insert(harness.keyMappings, command) end
+
+function _G.SetTextFont() end
+function _G.SetTextScale() end
+function _G.SetTextColour() end
+function _G.SetTextOutline() end
+function _G.BeginTextCommandDisplayText() end
+function _G.EndTextCommandDisplayText() end
+function _G.DrawRect(x, y, width, height)
+    table.insert(harness.drawnRects, { x = x, y = y, width = width, height = height })
+end
+
+-- Counts entries in a harness table keyed by handle rather than by index.
+function harness.count(collection)
+    local total = 0
+    for _ in pairs(collection) do total = total + 1 end
+    return total
 end
 
 harness.reset()

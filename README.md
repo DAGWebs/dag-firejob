@@ -10,6 +10,10 @@ The included menu, command, interaction, repository, and access helpers remove
 boilerplate from the resource you are building. They are deliberately generic;
 there is no second job system, society system, or player database hidden here.
 
+`modules/firefighter/` is the exception, and it is a worked example rather than
+a second framework: a complete firefighter job built entirely on those helpers.
+It is documented at the end of this file and can be deleted in one directory.
+
 ## Install
 
 1. Rename this directory for your resource and place it in `resources`.
@@ -463,7 +467,12 @@ modules/
 ├── interactions/          world markers and prompts
 ├── menu/                  normalized menus across providers
 ├── repository/            named CRUD repositories
-└── storage/               JSON-backed persistence
+├── storage/               JSON-backed persistence
+└── firefighter/           the bundled firefighter job (see below)
+    ├── config.lua         stations, apparatus, call types, ranks, pay
+    ├── shared.lua         ranks, certifications, suppression arithmetic
+    ├── server/            state, incident simulation, dispatch, pay, net API
+    └── client/            mirror, rendering, rescue, station, HUD, menus
 ```
 
 ## Tests
@@ -473,7 +482,7 @@ stub, so the tests exercise the code the server runs rather than matching
 source text:
 
 ```bash
-lua5.4 tests/lua/run.lua              # 163 behavioural tests
+lua5.4 tests/lua/run.lua              # 232 behavioural tests
 python3 -m unittest discover -s tests # manifest/adapter/config invariants
 luacheck .                            # lint
 find . -name '*.lua' -not -path './.git/*' -print0 | xargs -0 -n1 luac5.4 -p
@@ -481,9 +490,141 @@ find . -name '*.lua' -not -path './.git/*' -print0 | xargs -0 -n1 luac5.4 -p
 
 `tests/lua/harness.lua` stubs the natives the template touches (resource state,
 events, state bags, exports, storage files, markers, controls, NUI messages and
-focus). For the menu's appearance, open `tests/ui/preview.html` in a browser. Add a
+focus) plus the entity world the firefighter job reads and writes: player peds,
+vehicles, blips, script fires, weapons, and animations. The firefighter specs
+drive the real simulation through it — `spec_firefighter_shared.lua`,
+`spec_firefighter_server.lua`, and `spec_firefighter_client.lua`. For the menu's appearance, open `tests/ui/preview.html` in a browser. Add a
 `tests/lua/spec_*.lua` file and register it in `tests/lua/run.lua` to cover new
 behaviour. All four commands run in CI on every push.
+
+## The firefighter job
+
+`modules/firefighter/` is a complete, framework-agnostic firefighter job built
+on the primitives above. It uses the framework for the things the framework
+owns — the job name and grade, the bank account, duty state, notifications —
+and keeps everything it invented (XP, training sign-offs, career stats) in its
+own repository. Delete the directory and its five manifest entries and the
+template is exactly what it was.
+
+### What it does
+
+- **Dispatch.** Seven call types (structure, vehicle, brush, industrial,
+  hazmat, extrication, automatic alarm) are drawn from configured locations
+  while at least one firefighter is on duty, weighted so working fires come up
+  more often than alarms. Two calls never land at the same address.
+- **A fire that behaves like one.** Every call is a set of fire nodes with an
+  intensity. Unworked nodes grow to a ceiling and can spread to a new seat of
+  fire; a node knocked down to zero keeps residual heat and can flare back up,
+  so a crew that leaves before overhaul gets called back to the same building.
+- **Water that runs out.** A hose draws from an apparatus parked within reach,
+  an extinguisher from what you are carrying, and a deck monitor from the pump.
+  Tanks are refilled from real hydrant props, and litres are billed against the
+  supply that actually delivered them.
+- **Patients.** Victims are trapped, freed, treated, and transported, in that
+  order, and deteriorate while they wait. Extrication needs technical rescue,
+  treatment needs EMS, containment needs hazmat.
+- **Apparatus.** Six units, each gated by a certification, signed out of a
+  station garage and returned to it, with the water tank tracked server side.
+- **Careers.** XP per call, six ranks that each unlock certifications and a pay
+  multiplier, lifetime stats, and a department leaderboard.
+- **Interface.** Station fixtures are `DAG.Interactions` entries, every screen
+  is a `DAG.Menu` definition (so it renders through ox_lib, qb-menu, the
+  bundled NUI menu, or chat), and an on-duty HUD shows air, tank, and what is
+  still outstanding on the call.
+
+### Getting on duty
+
+Duty is granted by `Config.Firefighter.access.duty`, which is a `DAG.Access`
+policy: a framework job, an ACE permission, or both. On a framework that cannot
+report jobs — standalone included — the ACE entry is what makes the job usable:
+
+```cfg
+add_ace group.admin dag-firejob.fire.duty allow
+add_ace group.admin dag-firejob.fire.command allow
+add_ace group.admin dag-firejob.fire.admin allow
+```
+
+Stand on a station duty point and press `E`, use the menu (`F6`), or run
+`/<resource>:duty`. Commands are prefixed with the resource name for the same
+reason the rest of the template does it; set `Config.Firefighter.commandPrefix`
+to `fd` for `/fd:duty`.
+
+| Command | Who | What |
+| --- | --- | --- |
+| `<prefix>:duty` | Firefighters | Clock on or off at a station |
+| `<prefix>:roster` | Anyone | Who is on duty and what they are on |
+| `<prefix>:fdcall <type> [here]` | `access.admin` | Dispatch a call, optionally at your feet |
+| `<prefix>:fdclear [callId]` | `access.command` | Close one call, or all of them |
+| `<prefix>:fdcert <playerId> <cert>` | `access.command` | Sign a firefighter off for training |
+| `<prefix>:fdxp <playerId> <amount>` | `access.admin` | Adjust an XP total |
+
+`<prefix>:fdmenu` (bound to **F6**) opens the department menu, and
+`<prefix>:fdhose` toggles a hose line without going through it.
+
+### Where authority sits
+
+Everything a client can ask for is re-checked against state the server owns:
+
+- Distances are measured from `GetEntityCoords(GetPlayerPed(source))`, never
+  from a coordinate the client sent, so a spray, an extrication, or a hydrant
+  connection from across the map fails.
+- Water reports are rate limited per player, capped per report, checked against
+  the agent's range, and billed to a supply that has to exist and be in reach.
+- Extrication, treatment, and containment are two-phase: the server records the
+  start, and a completion that comes back early or from somewhere else is
+  refused. The client only draws the progress bar.
+- Payouts, XP, and promotions are computed at close from the server's own
+  ledger of who arrived and how much water they put on it.
+- The apparatus tank lives on the server. A spawned vehicle is only registered
+  once the server has confirmed the entity really is the model it authorized.
+
+The one thing taken on trust is the position of a hydrant prop, because the
+server cannot enumerate map objects; the player and their apparatus still have
+to be standing at the coordinates they report, so a forged hydrant buys water
+at the truck's own position and nothing more.
+
+### Configuration
+
+`Config.Firefighter` is declared in `config.lua` and filled in by
+`modules/firefighter/config.lua`, which is where every coordinate and balance
+number lives:
+
+```lua
+Config.Firefighter.dispatch.interval = { min = 180000, max = 420000 }
+Config.Firefighter.fire.spreadChance = 0.16      -- per tick, per call
+Config.Firefighter.scba.drainInSmoke = 4         -- litres of air per second
+Config.Firefighter.pay.minimumShare = 0.35       -- guaranteed slice of a split
+Config.Firefighter.enforceCertifications = true  -- false makes ranks cosmetic
+Config.Firefighter.enabled = false               -- switch the whole job off
+```
+
+Stations, apparatus, call types, and their incident locations are lists: adding
+a station or a call type is adding a table entry, not editing a module. The
+bundled coordinates are stock GTA V locations and are worth tuning for your map.
+
+### Extending it
+
+The job is exported as a whole:
+
+```lua
+local Fire = exports['your-resource-name']:GetFirefighter()
+
+Fire.Dispatch.Create('structure', { coords = vector3(...), label = 'Motel 6' })
+Fire.Progression.GrantCertification(identifier, 'hazmat')
+Fire.Progression.Leaderboard(10)
+Fire.State.Roster()
+```
+
+Client-side, `Fire.Client` is the mirror of dispatch, `Fire.Suppression` is the
+renderer and nozzle, and `Fire.Menus.Refresh()` rebuilds every menu from the
+current state — registering a menu id again is the supported way to update a
+live board.
+
+Things deliberately left as extension points, because they cannot be done
+framework-agnostically: turnout gear as clothing (ped components differ per
+framework and per clothing resource), item-backed equipment (wire
+`Bridge.HasItem` into `Suppression.Equip` if your server wants an SCBA item),
+and MDT/scanner integration (subscribe to the `fire:radio` client event).
 
 ## License
 

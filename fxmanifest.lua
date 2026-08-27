@@ -2,14 +2,16 @@ fx_version 'cerulean'
 game 'gta5'
 
 author 'DAG'
-description 'Framework-agnostic FiveM resource template'
-version '1.1.0'
+description 'Framework-agnostic FiveM resource template with a full firefighter job'
+version '1.2.0'
 
 lua54 'yes'
 
 shared_scripts {
     'config.lua',
-    'bridge/shared.lua'
+    'bridge/shared.lua',
+    'modules/firefighter/config.lua',
+    'modules/firefighter/shared.lua'
 }
 
 client_scripts {
@@ -18,6 +20,12 @@ client_scripts {
     'modules/menu/client.lua',
     'modules/menu/nui.lua',
     'modules/interactions/client.lua',
+    'modules/firefighter/client/state.lua',
+    'modules/firefighter/client/fire.lua',
+    'modules/firefighter/client/rescue.lua',
+    'modules/firefighter/client/duty.lua',
+    'modules/firefighter/client/hud.lua',
+    'modules/firefighter/client/menus.lua',
     'client/main.lua'
 }
 
@@ -36,5 +44,10 @@ server_scripts {
     'modules/commands/server.lua',
     'modules/access/server.lua',
     'modules/repository/server.lua',
+    'modules/firefighter/server/state.lua',
+    'modules/firefighter/server/incident.lua',
+    'modules/firefighter/server/progression.lua',
+    'modules/firefighter/server/dispatch.lua',
+    'modules/firefighter/server/api.lua',
     'server/main.lua'
 }

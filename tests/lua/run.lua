@@ -67,6 +67,9 @@ local specs = {
     'tests/lua/spec_bridge_client.lua',
     'tests/lua/spec_menu.lua',
     'tests/lua/spec_interactions.lua',
+    'tests/lua/spec_firefighter_shared.lua',
+    'tests/lua/spec_firefighter_server.lua',
+    'tests/lua/spec_firefighter_client.lua',
 }
 
 for _, spec in ipairs(specs) do
