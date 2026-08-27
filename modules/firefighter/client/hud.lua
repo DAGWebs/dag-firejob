@@ -119,6 +119,17 @@ function Hud.Draw()
         row = row + 0.022
     end
 
+    if Fire.Crew then
+        local remaining = Fire.Crew.ParRemaining()
+        if remaining then
+            text(('~r~PAR CHECK  %ds'):format(math.ceil(remaining / 1000)), x, row, 0.32)
+            row = row + 0.022
+        elseif Fire.Crew.Interior() then
+            text('~o~INTERIOR', x, row, 0.28)
+            row = row + 0.02
+        end
+    end
+
     local progress, kind = Rescue.ActionProgress()
     if progress then
         text(('%s...'):format(kind), x, row, 0.3)

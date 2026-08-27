@@ -8,6 +8,7 @@ local CLIENT_FILES = {
     'modules/firefighter/client/fire.lua',
     'modules/firefighter/client/effects.lua',
     'modules/firefighter/client/hose.lua',
+    'modules/firefighter/client/crew.lua',
     'modules/firefighter/client/rescue.lua',
     'modules/firefighter/client/uniform.lua',
     'modules/firefighter/client/events.lua',
@@ -669,6 +670,59 @@ test('a building that burned is still smoking later', function()
     harness.gameTimer = harness.gameTimer + 1000000
     assertEq(DAG.Fire.Effects.AftermathStep(), 0)
     assertEq(#DAG.Fire.Effects.Aftermath(), 0, 'and it stops being remembered')
+end)
+
+-- Crew ------------------------------------------------------------------------
+
+-- Interior is "in the smoke", which is the only definition that makes a PAR
+-- check mean anything, and it is reported on the transition rather than every
+-- tick.
+test('going into the smoke tells the server, once', function()
+    loadClient()
+    goOnDuty()
+    fire('fire:sync', { callPayload() })
+
+    harness.playerCoords = vector3(500.0, 0.0, 0.0)
+    assertFalse(DAG.Fire.Crew.InteriorStep())
+    assertEq(#harness.serverEvents, 0)
+
+    harness.playerCoords = vector3(2.0, 0.0, 0.0)
+    assertTrue(DAG.Fire.Crew.InteriorStep())
+    assertEq(harness.serverEvents[1].event, DAG.Framework.Event('fire:interior'))
+    assertEq(harness.serverEvents[1].args[1], true)
+
+    DAG.Fire.Crew.InteriorStep()
+    assertEq(#harness.serverEvents, 1, 'still inside, nothing new to say')
+
+    harness.playerCoords = vector3(500.0, 0.0, 0.0)
+    DAG.Fire.Crew.InteriorStep()
+    assertEq(harness.serverEvents[2].args[1], false)
+end)
+
+test('a PAR check runs a clock that answering stops', function()
+    loadClient()
+    goOnDuty()
+    harness.gameTimer = 10000
+
+    fire('fire:par', 'FD-0001', 30000)
+    assertEq(DAG.Fire.Crew.ParRemaining(), 30000)
+
+    harness.gameTimer = harness.gameTimer + 10000
+    assertEq(DAG.Fire.Crew.ParRemaining(), 20000)
+
+    DAG.Fire.Crew.Answer()
+    assertNil(DAG.Fire.Crew.ParRemaining(), 'answered')
+    assertEq(harness.serverEvents[#harness.serverEvents].event, DAG.Framework.Event('fire:parAnswer'))
+end)
+
+test('a PAR check that runs out stops asking', function()
+    loadClient()
+    goOnDuty()
+    harness.gameTimer = 10000
+    fire('fire:par', 'FD-0001', 30000)
+
+    harness.gameTimer = harness.gameTimer + 40000
+    assertNil(DAG.Fire.Crew.ParRemaining())
 end)
 
 -- Live configuration -----------------------------------------------------------

@@ -291,6 +291,14 @@ local function mainOptions()
             menu = menuId('call:' .. call.id)
         }
         options[#options + 1] = {
+            title = 'Crew board',
+            description = 'Take a role, see who is inside, call a PAR',
+            icon = 'user',
+            badge = context.crew and context.crew.par and not context.crew.par.resolved and 'PAR' or nil,
+            badgeTone = 'danger',
+            menu = menuId('crew')
+        }
+        options[#options + 1] = {
             title = 'Clear from the call',
             icon = 'close',
             onSelect = function() TriggerServerEvent(Bridge.Event('fire:leave')) end
@@ -376,6 +384,74 @@ local function departmentOptions()
     if #options == 1 then
         options[#options + 1] = { title = 'No departments configured', disabled = true }
     end
+    return options
+end
+
+-- The crew board ------------------------------------------------------------
+
+local function crewOptions()
+    local board = context.crew
+    local options = { { title = 'Assignment', header = true } }
+
+    if not board then
+        options[#options + 1] = { title = 'You are not on a call', disabled = true }
+        return options
+    end
+
+    for _, role in ipairs(context.roles or {}) do
+        local holder
+        for _, entry in ipairs(board.roles or {}) do
+            if entry.role == role.id then holder = entry end
+        end
+
+        options[#options + 1] = {
+            title = role.label,
+            description = holder and ('Held by %s'):format(holder.name) or 'Nobody has it',
+            icon = 'user',
+            badge = holder and 'Taken' or 'Free',
+            badgeTone = holder and 'accent' or 'success',
+            disabled = role.certification ~= nil and not certified(role.certification),
+            onSelect = function() Fire.Crew.Assign(role.id) end
+        }
+    end
+
+    options[#options + 1] = {
+        title = 'Clear my assignment',
+        icon = 'close',
+        onSelect = function() Fire.Crew.Assign(false) end
+    }
+
+    options[#options + 1] = { title = 'On scene', header = true }
+    for _, entry in ipairs(board.roles or {}) do
+        options[#options + 1] = {
+            title = entry.name or entry.identifier,
+            description = entry.roleLabel or entry.role,
+            icon = 'user',
+            badge = entry.interior and 'Interior' or (entry.onScene and 'On scene' or 'Responding'),
+            badgeTone = entry.interior and 'danger' or 'success',
+            disabled = true
+        }
+    end
+    for _, entry in ipairs(board.unassigned or {}) do
+        options[#options + 1] = {
+            title = entry.name or entry.identifier,
+            description = 'Unassigned',
+            icon = 'user',
+            badge = entry.interior and 'Interior' or (entry.onScene and 'On scene' or 'Responding'),
+            badgeTone = entry.interior and 'danger' or nil,
+            disabled = true
+        }
+    end
+
+    options[#options + 1] = { title = 'Command', header = true }
+    options[#options + 1] = {
+        title = 'Call a PAR check',
+        description = board.par and ('%d answered, %d missing'):format(
+            board.par.answered or 0, board.par.missing or 0) or 'Everybody answers, or the search starts',
+        icon = 'info',
+        onSelect = function() Fire.Crew.CallPar() end
+    }
+
     return options
 end
 
@@ -663,6 +739,12 @@ function Menus.Refresh()
         id = menuId('departments'),
         title = 'Departments',
         options = departmentOptions()
+    })
+    DAG.Menu.Register({
+        id = menuId('crew'),
+        title = 'Crew board',
+        subtitle = 'Who is doing what',
+        options = crewOptions()
     })
 end
 

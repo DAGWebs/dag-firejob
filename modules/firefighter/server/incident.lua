@@ -578,16 +578,32 @@ function Incident.BeginAction(source, callId, kind, targetId)
     local reach = tonumber((Shared.Settings().dispatch or {}).actionDistance) or 12.0
     if not coords or Shared.Distance(coords, target.coords) > reach then return false, 'out_of_range' end
 
-    local duration = actionDuration(kind, target)
+    -- More hands make the job faster, and a server that wants a job to
+    -- genuinely need two people says so in config.
+    local job = stage and stage.id or kind
+    if Fire.Crew and not Fire.Crew.HasHands(call, record.identifier, job) then
+        return false, 'needs_help'
+    end
+
+    local duration, hands = actionDuration(kind, target), 0
+    if Fire.Crew then duration, hands = Fire.Crew.Duration(call, record.identifier, duration) end
+
+    -- The floor the server will accept. A firefighter working it well finishes
+    -- somewhere between the two; nothing gets under the floor.
+    local skill = Shared.Settings().skill or {}
+    local fastest = math.floor(duration * Shared.Clamp(tonumber(skill.floor) or 0.55, 0.2, 1.0))
+
     record.action = {
         kind = kind,
         callId = callId,
         targetId = targetId,
         stage = stage and stage.id or nil,
         startedAt = GetGameTimer(),
-        duration = duration
+        duration = duration,
+        fastest = fastest,
+        hands = hands
     }
-    return true, nil, duration, stage
+    return true, nil, duration, stage, fastest, hands
 end
 
 function Incident.CancelAction(source)
@@ -604,9 +620,18 @@ function Incident.CompleteAction(source)
     local pending = record.action
     record.action = nil
 
-    -- A 10% tolerance absorbs client tick jitter without letting a client
-    -- claim a fifteen second job took two.
-    if GetGameTimer() - pending.startedAt < pending.duration * 0.9 then return false, 'too_fast' end
+    -- A job worked well finishes early, but never before the floor the server
+    -- set when it started: the best a client can do by lying is the same as
+    -- the best a good player can do by playing.
+    local elapsed = GetGameTimer() - pending.startedAt
+    local floor = pending.fastest or math.floor(pending.duration * 0.9)
+    if elapsed < floor then return false, 'too_fast' end
+
+    -- How much of the clock was saved, for whatever wants to pay for it.
+    local saved = 0
+    if pending.duration > floor then
+        saved = Shared.Clamp((pending.duration - elapsed) / (pending.duration - floor), 0, 1)
+    end
 
     local call = State.GetCall(pending.callId)
     if not call then return false, 'unknown_call' end
@@ -651,7 +676,9 @@ function Incident.CompleteAction(source)
         call = call,
         target = target,
         stage = stageLabel,
-        remaining = remaining
+        remaining = remaining,
+        saved = Shared.Round(saved, 2),
+        hands = pending.hands or 0
     }
 end
 

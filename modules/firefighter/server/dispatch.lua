@@ -395,6 +395,9 @@ function Dispatch.Tick()
             radio(('%s requesting mutual aid at %s'):format(call.id, call.location), 'error', call)
         end
 
+        -- A PAR check that has run its window is answered or it is not.
+        if Fire.Crew then Fire.Crew.ResolvePar(call) end
+
         local changed = select(1, Incident.Tick(call))
         for _, node in ipairs(changed) do State.SyncNode(call, node) end
         for _, victim in ipairs(Incident.TickVictims(call)) do State.SyncVictim(call, victim) end

@@ -69,6 +69,12 @@ local REASONS = {
     location_busy = 'Something is already burning there.',
     no_location = 'That call type has no locations configured.',
     not_assigned = 'You are not assigned to a call.',
+    not_on_call = 'They are not on this call.',
+    unknown_role = 'No such role.',
+    role_taken = 'Somebody else already has that role.',
+    needs_help = 'That takes two: get somebody else on scene.',
+    no_par = 'There is no accountability check running.',
+    too_soon = 'That was called too recently.',
     no_position = 'Your position could not be read.',
     no_effect = 'That had no effect.',
     no_station = 'Stand at a station duty point to clock on.',
@@ -425,6 +431,37 @@ on('fire:returnUnit', function(source)
     if not ok then return fail(source, reason) end
 end)
 
+-- Crew ---------------------------------------------------------------------
+
+on('fire:assignRole', function(source, roleId, targetIdentifier)
+    if roleId ~= nil and type(roleId) ~= 'string' then return end
+    if targetIdentifier ~= nil and type(targetIdentifier) ~= 'string' then return end
+
+    local ok, reason, role = Fire.Crew.Assign(source, roleId, targetIdentifier)
+    if not ok then return fail(source, reason) end
+
+    State.SyncCall(State.GetCall(State.Duty(source).callId))
+    Bridge.Notify(source, role and ('Assigned: %s.'):format(role.label) or 'Assignment cleared.', 'inform', 4000)
+end)
+
+on('fire:par', function(source)
+    local ok, reason = Fire.Crew.CallPar(source)
+    if not ok then return fail(source, reason) end
+end)
+
+on('fire:parAnswer', function(source)
+    local ok, reason = Fire.Crew.Answer(source)
+    if not ok then return fail(source, reason) end
+    Bridge.Notify(source, 'Accounted for.', 'success', 3000)
+end)
+
+-- The client knows whether it is standing in smoke; the server keeps the
+-- answer, because it is what a PAR check and a mayday are about.
+on('fire:interior', function(source, interior)
+    if type(interior) ~= 'boolean' then return end
+    Fire.Crew.SetInterior(source, interior)
+end)
+
 -- Academy ------------------------------------------------------------------
 
 on('fire:enrol', function(source, courseId)
@@ -539,6 +576,12 @@ Bridge.RegisterCallback(Bridge.Event('fire:context'), function(source, reply)
         roster = roster,
         departments = Departments.Summary(),
         academy = Academy.Catalogue(source),
+        crew = (function()
+            local call = record and record.callId and State.GetCall(record.callId)
+            if not call then return nil end
+            return Fire.Crew.Board(call)
+        end)(),
+        roles = Fire.Crew.Roles(),
         enrolment = enrolment and {
             course = enrolment.course.id,
             label = enrolment.course.label,

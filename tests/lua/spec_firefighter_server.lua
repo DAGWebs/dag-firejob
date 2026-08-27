@@ -11,6 +11,7 @@ local SERVER_FILES = {
     'modules/firefighter/server/departments.lua',
     'modules/firefighter/server/billing.lua',
     'modules/firefighter/server/dispatch.lua',
+    'modules/firefighter/server/crew.lua',
     'modules/firefighter/server/academy.lua',
     'modules/firefighter/server/events.lua',
     'modules/firefighter/server/mdt.lua',
@@ -1073,4 +1074,176 @@ test('the call payload never leaks another firefighter payout ledger', function(
     assertNil(payload.reportedBy)
     assertTrue(payload.severity > 0)
     assertEq(payload.id, call.id)
+end)
+
+-- Working as a crew ----------------------------------------------------------
+
+local function crewScene()
+    loadServer()
+    onDuty(1)
+    onDuty(2)
+    local call = DAG.Fire.Dispatch.Create('structure', { department = 'lsfd', force = true })
+    DAG.Fire.Dispatch.Join(1, call.id)
+    DAG.Fire.Dispatch.Join(2, call.id)
+    return call
+end
+
+-- Turning up to help is always worth something, which is why assistance is on
+-- by default and hard requirements are not.
+test('a job goes faster with more hands on it, down to a floor', function()
+    local call = crewScene()
+    local Crew = DAG.Fire.Crew
+
+    -- Nobody has arrived yet.
+    assertEq(select(1, Crew.Duration(call, 'license:1', 10000)), 10000)
+
+    call.responders['license:2'].onScene = true
+    assertEq(select(1, Crew.Duration(call, 'license:1', 10000)), 7500, 'one pair of hands')
+
+    for index = 3, 8 do
+        call.responders['license:' .. index] = { onScene = true, name = 'x', source = index }
+    end
+    assertEq(select(1, Crew.Duration(call, 'license:1', 10000)), 5000, 'and never below the floor')
+end)
+
+test('a job that takes two is refused alone only when the server says so', function()
+    local call = crewScene()
+    local Crew = DAG.Fire.Crew
+
+    assertTrue(Crew.HasHands(call, 'license:1', 'roof'), 'off by default')
+
+    Config.Firefighter.crew.enforce = true
+    assertFalse(Crew.HasHands(call, 'license:1', 'roof'))
+    assertTrue(Crew.HasHands(call, 'license:1', 'door'), 'and only for the jobs listed')
+
+    call.responders['license:2'].onScene = true
+    assertTrue(Crew.HasHands(call, 'license:1', 'roof'), 'somebody turned up')
+end)
+
+test('roles are taken one at a time where it matters', function()
+    local call = crewScene()
+    DAG.Fire.Progression.GrantCertification('license:1', 'engine')
+    DAG.Fire.Progression.GrantCertification('license:2', 'engine')
+
+    assertTrue(DAG.Fire.Crew.Assign(1, 'pump'))
+    assertEq(DAG.Fire.Crew.RoleOf(call, 'license:1'), 'pump')
+
+    local ok, reason = DAG.Fire.Crew.Assign(2, 'pump')
+    assertFalse(ok)
+    assertEq(reason, 'role_taken', 'there is one pump')
+
+    assertTrue(DAG.Fire.Crew.Assign(2, 'nozzle'), 'but any number on the line')
+    assertTrue(DAG.Fire.Crew.Assign(1, 'nozzle'), 'and you can move to it')
+    assertNil(DAG.Fire.Crew.Holder(call, 'pump'), 'which frees the pump')
+end)
+
+test('a role that needs a certification refuses somebody without it', function()
+    local call = crewScene()
+    assertTrue(call ~= nil)
+
+    local ok, reason = DAG.Fire.Crew.Assign(1, 'command')
+    assertFalse(ok)
+    assertEq(reason, 'not_certified')
+
+    DAG.Fire.Progression.GrantCertification('license:1', 'command')
+    assertTrue(DAG.Fire.Crew.Assign(1, 'command'))
+end)
+
+test('only command assigns somebody else', function()
+    local call = crewScene()
+
+    local ok, reason = DAG.Fire.Crew.Assign(1, 'nozzle', 'license:2')
+    assertFalse(ok)
+    assertEq(reason, 'denied')
+
+    DAG.Fire.Progression.GrantCertification('license:1', 'command')
+    DAG.Fire.Crew.Assign(1, 'command')
+    assertTrue(DAG.Fire.Crew.Assign(1, 'nozzle', 'license:2'))
+    assertEq(DAG.Fire.Crew.RoleOf(call, 'license:2'), 'nozzle')
+end)
+
+-- The mechanic that makes an incident commander a job rather than a title.
+test('a PAR check names whoever did not answer', function()
+    local call = crewScene()
+    DAG.Fire.Progression.GrantCertification('license:1', 'command')
+    DAG.Fire.Crew.Assign(1, 'command')
+
+    call.responders['license:1'].onScene = true
+    call.responders['license:2'].onScene = true
+
+    assertTrue(DAG.Fire.Crew.CallPar(1))
+    assertTrue(DAG.Fire.Crew.Answer(1))
+
+    assertNil(DAG.Fire.Crew.ResolvePar(call), 'the window is still open')
+
+    harness.gameTimer = harness.gameTimer + 40000
+    local missing = DAG.Fire.Crew.ResolvePar(call)
+    assertEq(#missing, 1)
+    assertEq(missing[1].identifier, 'license:2')
+end)
+
+test('a PAR check everybody answers comes back clean', function()
+    local call = crewScene()
+    DAG.Fire.Progression.GrantCertification('license:1', 'command')
+    DAG.Fire.Crew.Assign(1, 'command')
+    call.responders['license:1'].onScene = true
+    call.responders['license:2'].onScene = true
+
+    DAG.Fire.Crew.CallPar(1)
+    DAG.Fire.Crew.Answer(1)
+    DAG.Fire.Crew.Answer(2)
+
+    harness.gameTimer = harness.gameTimer + 40000
+    assertEq(#DAG.Fire.Crew.ResolvePar(call), 0)
+end)
+
+test('a PAR check cannot be spammed', function()
+    local call = crewScene()
+    assertTrue(call ~= nil)
+    DAG.Fire.Progression.GrantCertification('license:1', 'command')
+    DAG.Fire.Crew.Assign(1, 'command')
+
+    assertTrue(DAG.Fire.Crew.CallPar(1))
+    local ok, reason = DAG.Fire.Crew.CallPar(1)
+    assertFalse(ok)
+    assertEq(reason, 'too_soon')
+end)
+
+test('the board says who is doing what and who is inside', function()
+    local call = crewScene()
+    DAG.Fire.Progression.GrantCertification('license:1', 'engine')
+    DAG.Fire.Crew.Assign(1, 'pump')
+    call.responders['license:1'].onScene = true
+    call.responders['license:2'].interior = true
+
+    local board = DAG.Fire.Crew.Board(call)
+    assertEq(#board.roles, 1)
+    assertEq(board.roles[1].role, 'pump')
+    assertEq(#board.unassigned, 1)
+    assertEq(#DAG.Fire.Crew.Interior(call), 1)
+end)
+
+-- A job worked well finishes early, and never earlier than the floor the
+-- server set when it started.
+test('a timed job can be finished early but not instantly', function()
+    local call = crewScene()
+    DAG.Fire.Progression.GrantCertification('license:1', 'ems')
+    equip(1, 'medbag')
+
+    local victimId, victim = next(call.victims)
+    harness.placePlayer(1, vector3(victim.coords.x, victim.coords.y, victim.coords.z))
+
+    local ok, _, duration, _, fastest = DAG.Fire.Incident.BeginAction(1, call.id, 'treat', victimId)
+    assertTrue(ok)
+    assertEq(duration, 8000)
+    assertEq(fastest, 4400, 'the floor is 55% of it')
+
+    harness.gameTimer = harness.gameTimer + 4000
+    assertFalse(DAG.Fire.Incident.CompleteAction(1), 'under the floor')
+
+    DAG.Fire.Incident.BeginAction(1, call.id, 'treat', victimId)
+    harness.gameTimer = harness.gameTimer + 5000
+    local done, _, result = DAG.Fire.Incident.CompleteAction(1)
+    assertTrue(done)
+    assertTrue(result.saved > 0, 'and finishing early is worth something')
 end)
