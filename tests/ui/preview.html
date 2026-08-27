@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>DAG menu preview</title>
+<style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+        margin: 0; height: 100vh; display: grid; grid-template-columns: 260px 1fr;
+        font: 13px/1.5 'Segoe UI', system-ui, sans-serif; color: #e8ebf2; background: #0d1119;
+    }
+    aside { padding: 18px; border-right: 1px solid rgba(255,255,255,.08); overflow-y: auto; }
+    h1 { font-size: 14px; margin: 0 0 4px; }
+    p.lead { margin: 0 0 18px; font-size: 11.5px; color: rgba(232,235,242,.5); }
+    h2 { font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase;
+         color: rgba(232,235,242,.4); margin: 18px 0 7px; }
+    button, select, input {
+        width: 100%; margin-bottom: 6px; padding: 7px 9px; font: inherit; font-size: 12px;
+        color: inherit; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.1);
+        border-radius: 6px; cursor: pointer; text-align: left;
+    }
+    button:hover { background: rgba(255,255,255,.09); }
+    input[type=color] { height: 32px; padding: 3px; }
+    .stage { position: relative; overflow: hidden;
+        background: radial-gradient(120% 90% at 20% 15%, #3a4a63 0%, #1b2330 45%, #0d1219 100%); }
+    iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+    .note { margin-top: 18px; font-size: 11px; color: rgba(232,235,242,.35); }
+</style>
+</head>
+<body>
+<aside>
+    <h1>Menu preview</h1>
+    <p class="lead">Renders <code>ui/</code> exactly as FiveM would, with no game running.</p>
+
+    <h2>Sample</h2>
+    <button data-sample="garage">Garage &mdash; icons, badges, meter</button>
+    <button data-sample="colours">Submenu &mdash; breadcrumb, back</button>
+    <button data-sample="long">Long list &mdash; scrolling</button>
+    <button data-sample="empty">Empty menu</button>
+
+    <h2>Theme</h2>
+    <input type="color" id="accent" value="#4c8dff">
+    <select id="position">
+        <option value="right">Right</option>
+        <option value="left">Left</option>
+        <option value="center">Center</option>
+        <option value="top">Top</option>
+    </select>
+    <select id="width">
+        <option value="340">340px</option>
+        <option value="384" selected>384px</option>
+        <option value="440">440px</option>
+    </select>
+
+    <p class="note">Arrow keys, Enter, Backspace and Esc work inside the frame.
+    Click it first so it has keyboard focus.</p>
+</aside>
+
+<div class="stage"><iframe id="frame" src="../../ui/index.html"></iframe></div>
+
+<script>
+const SAMPLES = {
+    garage: {
+        title: 'Los Santos Customs', subtitle: 'Sandy Shores branch', canGoBack: false,
+        options: [
+            { title: 'Vehicle', header: true },
+            { title: 'Repair vehicle', description: 'Restores engine and body health', icon: 'wrench', badge: '$1,250', badgeTone: 'accent' },
+            { title: 'Respray', description: 'Primary, secondary and pearlescent', icon: 'car', submenu: true },
+            { title: 'Engine condition', description: 'Wear affects top speed', icon: 'info', badge: '68%', progress: 68 },
+            { title: 'Storage', header: true },
+            { title: 'Open trunk', description: 'Requires the vehicle to be unlocked', icon: 'box', badge: '12/40' },
+            { title: 'Impound vehicle', description: 'You do not have permission', icon: 'lock', disabled: true, badge: 'Locked', badgeTone: 'danger' },
+            { title: 'Pay outstanding fees', icon: 'cash', badge: 'Paid', badgeTone: 'success' }
+        ]
+    },
+    colours: {
+        title: 'Respray', breadcrumb: 'Los Santos Customs', canGoBack: true,
+        options: [
+            { title: 'Classic Black', icon: '⬛', badge: '$200' },
+            { title: 'Racing Red', icon: '🟥', badge: '$340' },
+            { title: 'Pearl White', icon: '⬜', badge: '$540' },
+            { title: 'Matte Olive', icon: '🟩', badge: '$480' }
+        ]
+    },
+    long: {
+        title: 'Impound lot', subtitle: '24 vehicles stored', canGoBack: true,
+        breadcrumb: 'Police / Vehicles',
+        options: Array.from({ length: 24 }, (_, i) => ({
+            title: 'Vehicle ' + String(i + 1).padStart(2, '0'),
+            description: i % 3 === 0 ? 'Flagged for inspection' : null,
+            icon: 'car',
+            badge: '$' + (150 + i * 25),
+            disabled: i === 4
+        }))
+    },
+    empty: { title: 'Watchlist', subtitle: 'Nothing tracked yet', canGoBack: true, options: [] }
+};
+
+const frame = document.getElementById('frame');
+let sample = 'garage';
+
+function theme() {
+    return {
+        accent: document.getElementById('accent').value,
+        position: document.getElementById('position').value,
+        width: Number(document.getElementById('width').value)
+    };
+}
+
+function send() {
+    frame.contentWindow.postMessage({ action: 'open', theme: theme(), menu: SAMPLES[sample] }, '*');
+}
+
+frame.addEventListener('load', send);
+document.querySelectorAll('[data-sample]').forEach(btn =>
+    btn.addEventListener('click', () => { sample = btn.dataset.sample; send(); }));
+['accent', 'position', 'width'].forEach(id =>
+    document.getElementById(id).addEventListener('input', send));
+</script>
+</body>
+</html>

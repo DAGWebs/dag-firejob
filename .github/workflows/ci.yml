@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  lua:
+    name: Lint and test (Lua)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Lua and LuaRocks
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4 luarocks
+
+      - name: Install luacheck
+        run: sudo luarocks install luacheck
+
+      - name: Lint
+        run: luacheck .
+
+      - name: Syntax-check every resource file
+        run: |
+          # luacheck parses with its own frontend; luac confirms the file is
+          # loadable by the runtime that will actually run it.
+          find . -name '*.lua' -not -path './.git/*' -print0 | xargs -0 -n1 luac5.4 -p
+
+      - name: Unit tests
+        run: lua5.4 tests/lua/run.lua
+
+  structure:
+    name: Structural tests (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m unittest discover -s tests -v

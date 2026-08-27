@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Menu</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="root" class="root" data-position="right" hidden>
+        <section class="menu" role="menu" aria-label="Resource menu">
+            <header class="menu__header">
+                <div class="menu__breadcrumb" id="breadcrumb" hidden></div>
+                <h1 class="menu__title" id="title">Menu</h1>
+                <p class="menu__subtitle" id="subtitle" hidden></p>
+            </header>
+
+            <div class="menu__body">
+                <ul class="menu__options" id="options"></ul>
+            </div>
+
+            <footer class="menu__footer">
+                <span class="hint"><kbd>&uarr;</kbd><kbd>&darr;</kbd> Navigate</span>
+                <span class="hint"><kbd>Enter</kbd> Select</span>
+                <span class="hint" id="hintBack" hidden><kbd>Backspace</kbd> Back</span>
+                <span class="hint"><kbd>Esc</kbd> Close</span>
+            </footer>
+        </section>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+__pycache__/
+*.py[cod]
+
+# Runtime storage written by modules/storage; the committed seed is data/storage.json
+data/*.json.bak

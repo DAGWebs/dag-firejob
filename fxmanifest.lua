@@ -1,0 +1,40 @@
+fx_version 'cerulean'
+game 'gta5'
+
+author 'DAG'
+description 'Framework-agnostic FiveM resource template'
+version '1.1.0'
+
+lua54 'yes'
+
+shared_scripts {
+    'config.lua',
+    'bridge/shared.lua'
+}
+
+client_scripts {
+    'bridge/client.lua',
+    'bridge/client/*.lua',
+    'modules/menu/client.lua',
+    'modules/menu/nui.lua',
+    'modules/interactions/client.lua',
+    'client/main.lua'
+}
+
+ui_page 'ui/index.html'
+
+files {
+    'ui/index.html',
+    'ui/style.css',
+    'ui/app.js'
+}
+
+server_scripts {
+    'bridge/server.lua',
+    'bridge/server/*.lua',
+    'modules/storage/server.lua',
+    'modules/commands/server.lua',
+    'modules/access/server.lua',
+    'modules/repository/server.lua',
+    'server/main.lua'
+}
