@@ -269,6 +269,14 @@ local function mainOptions()
             icon = 'info',
             badge = tostring(#Client.SortedCalls()),
             menu = menuId('board')
+        },
+        {
+            title = 'Mobile data terminal',
+            description = 'Call history, reports, personnel, billing',
+            icon = 'box',
+            onSelect = function()
+                if Fire.Mdt then Fire.Mdt.Open() end
+            end
         }
     }
 

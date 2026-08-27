@@ -95,17 +95,19 @@ end)
 
 -- Schema ---------------------------------------------------------------------
 
-test('the schema covers profiles, employment, training and the call log', function()
+test('the schema covers every table the job writes to', function()
     local log = stubOxmysql()
     loadServer()
     DAG.Fire.Database.Detect()
     DAG.Fire.Database.Migrate()
 
-    assertEq(#log.executes, 4)
+    assertEq(#log.executes, 6)
     assertTrue(contains(log.executes, 'firefighter_profiles') ~= nil)
     assertTrue(contains(log.executes, 'firefighter_employment') ~= nil)
     assertTrue(contains(log.executes, 'firefighter_training') ~= nil)
     assertTrue(contains(log.executes, 'firefighter_calls') ~= nil)
+    assertTrue(contains(log.executes, 'firefighter_invoices') ~= nil)
+    assertTrue(contains(log.executes, 'firefighter_reports') ~= nil)
 end)
 
 test('the table prefix is respected', function()
@@ -126,7 +128,7 @@ test('migrating twice does not run the schema twice', function()
     DAG.Fire.Database.Migrate()
     DAG.Fire.Database.Migrate()
 
-    assertEq(#log.executes, 4)
+    assertEq(#log.executes, 6)
 end)
 
 -- Profiles --------------------------------------------------------------------

@@ -29,6 +29,7 @@ client_scripts {
     'modules/firefighter/client/events.lua',
     'modules/firefighter/client/duty.lua',
     'modules/firefighter/client/academy.lua',
+    'modules/firefighter/client/mdt.lua',
     'modules/firefighter/client/hud.lua',
     'modules/firefighter/client/menus.lua',
     'client/main.lua'
@@ -55,9 +56,11 @@ server_scripts {
     'modules/firefighter/server/incident.lua',
     'modules/firefighter/server/progression.lua',
     'modules/firefighter/server/departments.lua',
+    'modules/firefighter/server/billing.lua',
     'modules/firefighter/server/dispatch.lua',
     'modules/firefighter/server/academy.lua',
     'modules/firefighter/server/events.lua',
+    'modules/firefighter/server/mdt.lua',
     'modules/firefighter/server/api.lua',
     'server/main.lua'
 }

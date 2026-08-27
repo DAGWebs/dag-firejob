@@ -71,3 +71,43 @@ CREATE TABLE IF NOT EXISTS `firefighter_calls` (
     PRIMARY KEY (`id`),
     KEY `idx_firefighter_calls_department` (`department`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Invoices raised by the department. The ledger is the job's own, because no
+-- two frameworks agree on what an invoice is; settlement goes through whatever
+-- money methods the active framework provides.
+CREATE TABLE IF NOT EXISTS `firefighter_invoices` (
+    `id` INT NOT NULL AUTO_INCREMENT,
+    `reference` VARCHAR(16) NOT NULL,
+    `identifier` VARCHAR(64) NOT NULL,
+    `name` VARCHAR(64) DEFAULT NULL,
+    `department` VARCHAR(32) DEFAULT NULL,
+    `call_ref` VARCHAR(16) DEFAULT NULL,
+    `amount` INT NOT NULL DEFAULT 0,
+    `paid` TINYINT(1) NOT NULL DEFAULT 0,
+    `voided` TINYINT(1) NOT NULL DEFAULT 0,
+    `reason` VARCHAR(190) DEFAULT NULL,
+    `items` LONGTEXT DEFAULT NULL,
+    `raised_by` VARCHAR(64) DEFAULT NULL,
+    `settled_at` BIGINT DEFAULT NULL,
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `idx_firefighter_invoices_reference` (`reference`),
+    KEY `idx_firefighter_invoices_identifier` (`identifier`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Incident reports filed against a closed call.
+CREATE TABLE IF NOT EXISTS `firefighter_reports` (
+    `id` INT NOT NULL AUTO_INCREMENT,
+    `call_ref` VARCHAR(16) NOT NULL,
+    `department` VARCHAR(32) DEFAULT NULL,
+    `author` VARCHAR(64) NOT NULL,
+    `author_name` VARCHAR(64) DEFAULT NULL,
+    `kind` VARCHAR(32) DEFAULT NULL,
+    `location` VARCHAR(190) DEFAULT NULL,
+    `narrative` TEXT,
+    `units` LONGTEXT DEFAULT NULL,
+    `casualties` INT NOT NULL DEFAULT 0,
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `idx_firefighter_reports_call` (`call_ref`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

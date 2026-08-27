@@ -498,6 +498,7 @@ function _G.SetEntityCollision() end
 function _G.NetworkDoesNetworkIdExist(netId) return harness.netIds[netId] ~= nil end
 
 function _G.GetVehiclePedIsIn() return harness.pedVehicle or 0 end
+function _G.IsPedInAnyVehicle() return (harness.pedVehicle or 0) ~= 0 end
 function _G.GetEntitySpeed() return harness.vehicleSpeed or 0.0 end
 function _G.HasEntityCollidedWithAnything() return harness.vehicleCollided == true end
 function _G.IsEntityOnFire(entity) return harness.entityOnFire[entity] == true end

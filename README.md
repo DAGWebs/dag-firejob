@@ -526,6 +526,9 @@ in a different place on every framework, and there is a page per framework.
   its own stations, framework job, uniform, jurisdiction, and roster. Calls are
   routed to whichever department covers where they happened, and a department
   with nobody on duty has its neighbours toned out for mutual aid.
+- **A terminal with billing.** Call history, incident reports, personnel
+  records, and an invoice ledger the department owns, settled through whichever
+  framework is running.
 - **A real run card.** Twelve call types weighted the way a fire service's
   actually is: medicals and traffic collisions most, then structure and vehicle
   fires, alarms, brush, gas leaks, industrial fires, hazmat, elevator rescue,

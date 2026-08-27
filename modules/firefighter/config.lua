@@ -838,6 +838,60 @@ Config.Firefighter = {
         cleanSceneBonus = 1.15
     },
 
+    -- Billing ---------------------------------------------------------------
+    -- The department keeps its own invoice ledger, because no two frameworks
+    -- agree on what an invoice is. Settlement goes through the bridge's money
+    -- methods, so it works on every framework; `provider` additionally mirrors
+    -- the invoice into a billing resource when one is running.
+    billing = {
+        enabled = true,
+        provider = 'auto',   -- auto, internal, esx_billing, qb-phone, none
+        account = 'bank',
+        -- Where collected fees go. The internal balance is always authoritative;
+        -- a society provider is mirrored into when one is available.
+        society = {
+            enabled = true,
+            provider = 'auto',   -- auto, internal, qb-management, esx_addonaccount
+            account = 'lsfd'     -- society name for the framework provider
+        },
+        -- What each thing is worth. An invoice raised from a call is built from
+        -- what actually happened on it.
+        fees = {
+            response = 250,
+            perFire = 75,
+            perLitre = 0.4,
+            ems = 400,
+            transport = 600,
+            extrication = 850,
+            hazmat = 1200,
+            falseAlarm = 300
+        },
+        -- Billing resources are integrated by event name rather than by a
+        -- hard-coded call, so a fork that renamed one is retargeted here
+        -- instead of in the module.
+        providers = {
+            esx_billing = { resource = 'esx_billing', event = 'esx_billing:sendBill', society = 'society_fire' },
+            ['qb-phone'] = { resource = 'qb-phone', clientEvent = 'qb-phone:client:AddInvoice' }
+        },
+        tax = 0.0,
+        -- A player whose own car burned or who wrapped it round a pole is a
+        -- billable party the server actually knows about.
+        autoBill = { playerCaused = true },
+        -- Invoices older than this are hidden from the terminal's default view.
+        historyDays = 30
+    },
+
+    -- Mobile data terminal ---------------------------------------------------
+    mdt = {
+        enabled = true,
+        command = 'mdt',
+        key = 'F7',
+        -- Filing an incident report after a call is worth something, or nobody
+        -- ever files one.
+        reportBonus = { pay = 150, xp = 40 },
+        pageSize = 10
+    },
+
     hud = {
         enabled = true,
         x = 0.015,

@@ -52,3 +52,25 @@ started.
 | `setDuty` | clocking on and off | duty is tracked here only |
 
 The startup line names anything missing before it matters.
+
+## Billing
+
+The department keeps its own invoice ledger and settles through the bridge's
+money methods, so billing works on every framework with no extra resource. Where
+a billing resource *is* running it is mirrored into, so the invoice also shows up
+where your players already look for one:
+
+| Resource | What it gets | Configure |
+| --- | --- | --- |
+| `esx_billing` | A bill in the ESX billing table | `billing.provider = 'esx_billing'` |
+| `qb-phone` | An invoice on the phone | `billing.provider = 'qb-phone'` |
+| none | The terminal is the only place it appears | `billing.provider = 'internal'` |
+
+Collected fees go to the department account, which is tracked here. When
+`qb-management` or `esx_addonaccount` is running it is credited alongside so the
+rest of the server sees the money — set `billing.society.account` to the society
+name your server uses (`lsfd` by default, matching the job name).
+
+Provider event names live in `Config.Firefighter.billing.providers`. A fork that
+renamed `qb-phone:client:AddInvoice` is retargeted there rather than in the
+module.

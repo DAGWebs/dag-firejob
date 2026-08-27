@@ -270,6 +270,17 @@ function Dispatch.Resolve(callId, reason)
     State.SyncCall(call)
     State.SyncRemoval(call, reason or 'resolved')
     logCall(call, reason or 'resolved', paid)
+    -- Kept in memory as well as in the log, so the terminal has a history on a
+    -- server with no database at all.
+    if Fire.Mdt and not call.training then Fire.Mdt.Remember(call, reason or 'resolved', paid) end
+
+    -- A player whose own car burned is a billable party the server actually
+    -- knows about; everything else is billed by hand from the terminal.
+    if Fire.Billing and not call.training then
+        local ok, err = pcall(Fire.Billing.BillCall, call)
+        if not ok then Bridge.Print('automatic billing failed: %s', tostring(err)) end
+    end
+
     State.RemoveCall(call.id)
 
     radio(('%s closed - %s'):format(call.id, reason or 'under control'), 'success', call)
@@ -291,6 +302,7 @@ function Dispatch.Expire(callId)
 
     State.SyncRemoval(call, 'expired')
     logCall(call, 'expired', 0)
+    if Fire.Mdt then Fire.Mdt.Remember(call, 'expired', 0) end
     State.RemoveCall(call.id)
     radio(('%s burned out before a unit arrived'):format(call.id), 'error', call)
     return true

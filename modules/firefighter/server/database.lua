@@ -138,6 +138,7 @@ function Database.Schema()
     local profiles, employment, training, calls =
         Database.Table('profiles'), Database.Table('employment'),
         Database.Table('training'), Database.Table('calls')
+    local invoices, reports = Database.Table('invoices'), Database.Table('reports')
 
     return {
         ([[CREATE TABLE IF NOT EXISTS `%s` (
@@ -202,7 +203,43 @@ function Database.Schema()
             `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (`id`),
             KEY `idx_%s_department` (`department`)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;]]):format(calls, calls)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;]]):format(calls, calls),
+
+        ([[CREATE TABLE IF NOT EXISTS `%s` (
+            `id` INT NOT NULL AUTO_INCREMENT,
+            `reference` VARCHAR(16) NOT NULL,
+            `identifier` VARCHAR(64) NOT NULL,
+            `name` VARCHAR(64) DEFAULT NULL,
+            `department` VARCHAR(32) DEFAULT NULL,
+            `call_ref` VARCHAR(16) DEFAULT NULL,
+            `amount` INT NOT NULL DEFAULT 0,
+            `paid` TINYINT(1) NOT NULL DEFAULT 0,
+            `voided` TINYINT(1) NOT NULL DEFAULT 0,
+            `reason` VARCHAR(190) DEFAULT NULL,
+            `items` LONGTEXT DEFAULT NULL,
+            `raised_by` VARCHAR(64) DEFAULT NULL,
+            `settled_at` BIGINT DEFAULT NULL,
+            `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `idx_%s_reference` (`reference`),
+            KEY `idx_%s_identifier` (`identifier`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;]]):format(invoices, invoices, invoices),
+
+        ([[CREATE TABLE IF NOT EXISTS `%s` (
+            `id` INT NOT NULL AUTO_INCREMENT,
+            `call_ref` VARCHAR(16) NOT NULL,
+            `department` VARCHAR(32) DEFAULT NULL,
+            `author` VARCHAR(64) NOT NULL,
+            `author_name` VARCHAR(64) DEFAULT NULL,
+            `kind` VARCHAR(32) DEFAULT NULL,
+            `location` VARCHAR(190) DEFAULT NULL,
+            `narrative` TEXT,
+            `units` LONGTEXT DEFAULT NULL,
+            `casualties` INT NOT NULL DEFAULT 0,
+            `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`),
+            KEY `idx_%s_call` (`call_ref`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;]]):format(reports, reports)
     }
 end
 
