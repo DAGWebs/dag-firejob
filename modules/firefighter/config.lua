@@ -44,6 +44,7 @@ Config.Firefighter = {
         roster = resource .. ':roster',
         menu = resource .. ':fdmenu',
         hose = resource .. ':fdhose',
+        mayday = resource .. ':mayday',
         mdt = resource .. ':mdt',
         -- Anyone
         emergency = resource .. ':911',
@@ -66,6 +67,7 @@ Config.Firefighter = {
     -- rebind these under Settings, Key Bindings, FiveM.
     keybinds = {
         menu = 'F6',
+        mayday = false,
         mdt = false,
         hose = false
     },

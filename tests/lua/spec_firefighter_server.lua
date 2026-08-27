@@ -12,6 +12,7 @@ local SERVER_FILES = {
     'modules/firefighter/server/billing.lua',
     'modules/firefighter/server/dispatch.lua',
     'modules/firefighter/server/crew.lua',
+    'modules/firefighter/server/mayday.lua',
     'modules/firefighter/server/academy.lua',
     'modules/firefighter/server/events.lua',
     'modules/firefighter/server/mdt.lua',
@@ -1246,4 +1247,159 @@ test('a timed job can be finished early but not instantly', function()
     local done, _, result = DAG.Fire.Incident.CompleteAction(1)
     assertTrue(done)
     assertTrue(result.saved > 0, 'and finishing early is worth something')
+end)
+
+-- Mayday -----------------------------------------------------------------------
+
+local function downScene()
+    loadServer()
+    onDuty(1)
+    onDuty(2)
+    local call = DAG.Fire.Dispatch.Create('structure', { department = 'lsfd', force = true })
+    DAG.Fire.Dispatch.Join(1, call.id)
+    DAG.Fire.Dispatch.Join(2, call.id)
+    harness.placePlayer(1, vector3(call.coords.x, call.coords.y, call.coords.z))
+    harness.placePlayer(2, vector3(call.coords.x, call.coords.y, call.coords.z))
+    return call
+end
+
+-- This is what makes the air gauge mean something: running out is not an
+-- inconvenience if it is the thing that puts you on the floor.
+test('running out of air inside puts a firefighter down', function()
+    local call = downScene()
+    call.responders['license:1'].interior = true
+    DAG.Fire.State.Duty(1).air = 0
+
+    assertTrue(DAG.Fire.Mayday.Check(1))
+    local down = DAG.Fire.Mayday.Of(1)
+    assertEq(down.reason, 'air')
+    assertEq(DAG.Fire.Mayday.Count(), 1)
+end)
+
+test('running out of air in the open does not', function()
+    local call = downScene()
+    call.responders['license:1'].interior = false
+    DAG.Fire.State.Duty(1).air = 0
+
+    assertFalse(DAG.Fire.Mayday.Check(1))
+    assertNil(DAG.Fire.Mayday.Of(1))
+end)
+
+test('taking too much heat puts a firefighter down wherever they are', function()
+    downScene()
+    harness.entityHealth[harness.playerPeds[1]] = 90
+
+    assertTrue(DAG.Fire.Mayday.Check(1))
+    assertEq(DAG.Fire.Mayday.Of(1).reason, 'heat')
+end)
+
+test('a mayday is heard by the whole department, not just the call', function()
+    downScene()
+    harness.clientEvents = {}
+    DAG.Fire.Mayday.Declare(1, 'manual')
+
+    local told = 0
+    for _, entry in ipairs(harness.clientEvents) do
+        if entry.event == DAG.Framework.Event('fire:mayday') then told = told + 1 end
+    end
+    assertEq(told, 2, 'both firefighters on duty')
+end)
+
+test('getting to them in time gets them out and pays for it', function()
+    downScene()
+    DAG.Fire.Mayday.Declare(1, 'air')
+
+    local ok, _, duration = DAG.Fire.Mayday.BeginRescue(2, 1)
+    assertTrue(ok)
+    assertEq(duration, 6000)
+
+    harness.gameTimer = harness.gameTimer + 7000
+    assertTrue(DAG.Fire.Mayday.CompleteRescue(2))
+
+    assertNil(DAG.Fire.Mayday.Of(1), 'out')
+    assertTrue(DAG.Fire.State.Duty(1).air > 0, 'and back on air')
+    assertEq(DAG.Framework.GetMoney(2, 'bank'), 750)
+    assertEq(DAG.Fire.State.ProfileFor('license:2').stats.maydaysAnswered, 1)
+end)
+
+test('a rescue cannot be rushed or done from across the room', function()
+    downScene()
+    DAG.Fire.Mayday.Declare(1, 'air')
+
+    harness.placePlayer(2, vector3(500.0, 0.0, 0.0))
+    local ok, reason = DAG.Fire.Mayday.BeginRescue(2, 1)
+    assertFalse(ok)
+    assertEq(reason, 'out_of_range')
+
+    harness.placePlayer(2, DAG.Fire.Mayday.Of(1).coords)
+    DAG.Fire.Mayday.BeginRescue(2, 1)
+    harness.gameTimer = harness.gameTimer + 1000
+
+    local done, failure = DAG.Fire.Mayday.CompleteRescue(2)
+    assertFalse(done)
+    assertEq(failure, 'too_fast')
+end)
+
+test('nobody can drag themselves out', function()
+    downScene()
+    DAG.Fire.Mayday.Declare(1, 'air')
+
+    local ok, reason = DAG.Fire.Mayday.BeginRescue(1, 1)
+    assertFalse(ok)
+    assertEq(reason, 'cannot_rescue_yourself')
+end)
+
+test('a rescuer who walks away loses the attempt', function()
+    downScene()
+    DAG.Fire.Mayday.Declare(1, 'air')
+    DAG.Fire.Mayday.BeginRescue(2, 1)
+
+    harness.placePlayer(2, vector3(500.0, 0.0, 0.0))
+    DAG.Fire.Mayday.Tick()
+
+    assertNil(DAG.Fire.Mayday.Of(1).rescuer)
+    assertTrue(DAG.Fire.Mayday.Of(1) ~= nil, 'and they are still down')
+end)
+
+test('nobody reaching them in time is the end of it', function()
+    downScene()
+    DAG.Fire.Mayday.Declare(1, 'air')
+
+    harness.gameTimer = harness.gameTimer + 150000
+    DAG.Fire.Mayday.Tick()
+
+    assertNil(DAG.Fire.Mayday.Of(1))
+    local lost
+    for _, entry in ipairs(harness.clientEvents) do
+        if entry.event == DAG.Framework.Event('fire:maydayLost') then lost = entry end
+    end
+    assertTrue(lost ~= nil)
+    assertEq(lost.target, 1)
+end)
+
+-- Not answering a PAR check while standing in the smoke is exactly the case
+-- accountability checks exist for.
+test('a PAR check nobody answers puts the missing firefighter down', function()
+    local call = downScene()
+    DAG.Fire.Progression.GrantCertification('license:1', 'command')
+    DAG.Fire.Crew.Assign(1, 'command')
+    call.responders['license:1'].onScene = true
+    call.responders['license:2'].onScene = true
+
+    DAG.Fire.Crew.CallPar(1)
+    DAG.Fire.Crew.Answer(1)
+
+    harness.gameTimer = harness.gameTimer + 40000
+    DAG.Fire.Crew.ResolvePar(call)
+
+    assertEq(DAG.Fire.Mayday.Of(2).reason, 'unaccounted')
+end)
+
+test('somebody who clocks off stops being down', function()
+    downScene()
+    DAG.Fire.Mayday.Declare(1, 'air')
+    DAG.Fire.State.GoOffDuty(1)
+
+    DAG.Fire.Mayday.Tick()
+    assertNil(DAG.Fire.Mayday.Of(1))
 end)

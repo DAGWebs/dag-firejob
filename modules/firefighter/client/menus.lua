@@ -445,6 +445,17 @@ local function crewOptions()
 
     options[#options + 1] = { title = 'Command', header = true }
     options[#options + 1] = {
+        title = 'Call a MAYDAY',
+        description = 'For when you cannot get yourself out',
+        icon = 'close',
+        badgeTone = 'danger',
+        onSelect = function()
+            DAG.Menu.Confirm('Call a mayday?', 'Everybody will be told.', function(confirmed)
+                if confirmed and Fire.Mayday then Fire.Mayday.Call() end
+            end)
+        end
+    }
+    options[#options + 1] = {
         title = 'Call a PAR check',
         description = board.par and ('%d answered, %d missing'):format(
             board.par.answered or 0, board.par.missing or 0) or 'Everybody answers, or the search starts',

@@ -74,6 +74,11 @@ local REASONS = {
     role_taken = 'Somebody else already has that role.',
     needs_help = 'That takes two: get somebody else on scene.',
     no_par = 'There is no accountability check running.',
+    not_down = 'They are not down.',
+    already_down = 'You are already down.',
+    already_rescuing = 'Somebody else is already on them.',
+    cannot_rescue_yourself = 'You cannot drag yourself out.',
+    not_rescuing = 'You are not dragging anybody.',
     too_soon = 'That was called too recently.',
     no_position = 'Your position could not be read.',
     no_effect = 'That had no effect.',
@@ -431,6 +436,30 @@ on('fire:returnUnit', function(source)
     if not ok then return fail(source, reason) end
 end)
 
+-- Mayday -------------------------------------------------------------------
+
+on('fire:mayday', function(source)
+    local ok, reason = Fire.Mayday.Declare(source, 'manual')
+    if not ok then return fail(source, reason) end
+end)
+
+on('fire:beginRescue', function(source, target)
+    if type(target) ~= 'number' then return end
+
+    local ok, reason, duration = Fire.Mayday.BeginRescue(source, target)
+    if not ok then return fail(source, reason) end
+    TriggerClientEvent(Bridge.Event('fire:rescueStarted'), source, target, duration)
+end)
+
+on('fire:completeRescue', function(source)
+    local ok, reason = Fire.Mayday.CompleteRescue(source)
+    if not ok and reason ~= 'not_rescuing' then fail(source, reason) end
+end)
+
+on('fire:cancelRescue', function(source)
+    Fire.Mayday.CancelRescue(source)
+end)
+
 -- Crew ---------------------------------------------------------------------
 
 on('fire:assignRole', function(source, roleId, targetIdentifier)
@@ -582,6 +611,17 @@ Bridge.RegisterCallback(Bridge.Event('fire:context'), function(source, reply)
             return Fire.Crew.Board(call)
         end)(),
         roles = Fire.Crew.Roles(),
+        mayday = (function()
+            local list = {}
+            for downSource, down in pairs(Fire.Mayday.Active()) do
+                list[#list + 1] = {
+                    source = downSource, name = down.name, reason = down.reason,
+                    coords = down.coords, callId = down.callId,
+                    remaining = math.max(0, down.window - (GetGameTimer() - down.startedAt))
+                }
+            end
+            return list
+        end)(),
         enrolment = enrolment and {
             course = enrolment.course.id,
             label = enrolment.course.label,
@@ -630,6 +670,12 @@ end
 command('duty', function(source)
     toggleDuty(source)
 end, { help = 'Clock on or off at a fire station duty point.', allowConsole = false })
+
+command('mayday', function(source)
+    if source == 0 then return end
+    local ok, reason = Fire.Mayday.Declare(source, 'manual')
+    if not ok then fail(source, reason) end
+end, { help = 'Call a mayday. Somebody has to come and get you.', allowConsole = false })
 
 command('roster', function(source)
     local roster = State.Roster()

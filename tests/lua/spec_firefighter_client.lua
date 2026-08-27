@@ -9,6 +9,7 @@ local CLIENT_FILES = {
     'modules/firefighter/client/effects.lua',
     'modules/firefighter/client/hose.lua',
     'modules/firefighter/client/crew.lua',
+    'modules/firefighter/client/mayday.lua',
     'modules/firefighter/client/rescue.lua',
     'modules/firefighter/client/uniform.lua',
     'modules/firefighter/client/events.lua',

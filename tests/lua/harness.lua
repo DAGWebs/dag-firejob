@@ -77,6 +77,7 @@ function harness.reset()
     harness.pedGender = 'male'
     harness.pedVehicle = 0
     harness.pedDown = false
+    harness.ragdolled = false
     harness.vehicleSpeed = 0.0
     harness.vehicleCollided = false
     harness.entityOnFire = {}
@@ -538,6 +539,8 @@ function _G.HasEntityCollidedWithAnything() return harness.vehicleCollided == tr
 function _G.IsEntityOnFire(entity) return harness.entityOnFire[entity] == true end
 function _G.GetVehicleEngineHealth() return harness.engineHealth or 1000.0 end
 function _G.IsPedDeadOrDying() return harness.pedDown == true end
+function _G.DisableControlAction() end
+function _G.SetPedToRagdoll() harness.ragdolled = true end
 
 local function damage(field)
     return function(vehicle, index)

@@ -119,6 +119,21 @@ function Hud.Draw()
         row = row + 0.022
     end
 
+    if Fire.Mayday and Fire.Mayday.IsDown() then
+        local left = Fire.Mayday.Remaining(GetPlayerServerId(PlayerId()))
+        text(('~r~MAYDAY  %ds'):format(math.ceil((left or 0) / 1000)), x, row, 0.34)
+        row = row + 0.024
+    end
+
+    if Fire.Mayday then
+        local dragging = Fire.Mayday.Progress()
+        if dragging then
+            text('Dragging them out...', x, row, 0.3)
+            bar(x + 0.055, row + 0.004, 0.09, dragging, 235, 90, 90)
+            row = row + 0.022
+        end
+    end
+
     if Fire.Crew then
         local remaining = Fire.Crew.ParRemaining()
         if remaining then
