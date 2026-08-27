@@ -474,10 +474,11 @@ modules/
 └── firefighter/           the bundled firefighter job (see below)
     ├── config.lua         departments, stations, run card, ranks, training
     ├── shared.lua         departments, ranks, suppression arithmetic
-    ├── server/            persistence, live config editor, state, simulation,
-    │                      dispatch, hiring, academy, incident sources, net API
+    ├── server/            persistence, live config editor, framework job
+    │                      definitions, state, simulation, dispatch, hiring,
+    │                      academy, incident sources, billing, terminal, API
     └── client/            config, mirror, rendering, hose, rescue, uniform,
-                           events, station, academy, HUD, menus
+                           events, station, academy, terminal, HUD, menus
 sql/                       schema, plus the ESX job and item imports
 install/                   per-framework job and item definitions to paste in
 ```
@@ -489,7 +490,7 @@ stub, so the tests exercise the code the server runs rather than matching
 source text:
 
 ```bash
-lua5.4 tests/lua/run.lua              # 324 behavioural tests
+lua5.4 tests/lua/run.lua              # 375 behavioural tests
 python3 -m unittest discover -s tests # manifest/adapter/config invariants
 luacheck .                            # lint
 find . -name '*.lua' -not -path './.git/*' -print0 | xargs -0 -n1 luac5.4 -p
@@ -503,8 +504,10 @@ crash and fire signals its incident detectors watch. The firefighter specs drive
 the real simulation through it — `spec_firefighter_shared.lua`,
 `spec_firefighter_server.lua`, `spec_firefighter_client.lua`, and
 `spec_firefighter_database.lua`, which runs the persistence layer against a
-stubbed `oxmysql`, and `spec_firefighter_editor.lua`, which drives the in-game
-editor through the same command handler a player types into. For the menu's appearance, open `tests/ui/preview.html` in a browser. Add a
+stubbed `oxmysql`, `spec_firefighter_editor.lua`, which drives the in-game
+editor through the same command handler a player types into, and
+`spec_firefighter_mdt.lua` for the terminal, the billing behind it, and the
+framework job definitions it reads. For the menu's appearance, open `tests/ui/preview.html` in a browser. Add a
 `tests/lua/spec_*.lua` file and register it in `tests/lua/run.lua` to cover new
 behaviour. All four commands run in CI on every push.
 
@@ -586,24 +589,181 @@ add_ace group.admin dag-firejob.admin allow
 ```
 
 Stand on a station duty point and press `E`, use the menu (`F6`), or run
-`/<prefix>:duty`. Commands are prefixed with the resource name for the same
-reason the rest of the template does it; set `Config.Firefighter.commandPrefix`
-to `fd` for `/fd:duty`.
+`/<prefix>:duty`.
 
-| Command | Who | What |
-| --- | --- | --- |
-| `<prefix>:duty` | Firefighters | Clock on or off at a station |
-| `<prefix>:roster` | Anyone | Who is on duty, and for which department |
-| `<prefix>:911 <type>` | Anyone | Report an emergency at your position |
-| `<prefix>:fdmenu` (F6) | Firefighters | The department menu |
-| `<prefix>:fdhose` | Firefighters | Pull or stow a hose line |
-| `<prefix>:fdhire <id> [dept]` | Officers | Hire the player in front of you |
-| `<prefix>:fdfire <id> [reason]` | Officers | Dismiss a firefighter |
-| `<prefix>:fdrank <id> <rank>` | Officers | Promote or demote |
-| `<prefix>:fdcert <id> <cert>` | Officers | Sign off training by hand |
-| `<prefix>:fdclear [callId]` | Officers | Close a call |
-| `<prefix>:fdcall <type> [here]` | Admins | Dispatch a call |
-| `<prefix>:fdxp <id> <amount>` | Admins | Adjust an XP total |
+Every command and key is named in config, and nothing is registered under a name
+the server did not ask for. Defaults are prefixed with the resource name so they
+do not collide on a busy server:
+
+```lua
+Config.Firefighter.commandPrefix = 'fd'          -- shorter defaults: /fd:duty
+Config.Firefighter.commands.mdt = 'terminal'     -- rename one outright
+Config.Firefighter.commands.editor = false       -- or do not register it at all
+Config.Firefighter.keybinds.menu = 'F6'
+Config.Firefighter.keybinds.mdt = false          -- registered, but unbound
+```
+
+| Config key | Default | Who | What |
+| --- | --- | --- | --- |
+| `duty` | `<prefix>:duty` | Firefighters | Clock on or off at a station |
+| `roster` | `<prefix>:roster` | Anyone | Who is on duty, and for which department |
+| `emergency` | `<prefix>:911 <type>` | Anyone | Report an emergency at your position |
+| `menu` | `<prefix>:fdmenu` (F6) | Firefighters | The department menu |
+| `mdt` | `<prefix>:mdt` | Anyone | The terminal; a bill payer's view if you are not a firefighter |
+| `hose` | `<prefix>:fdhose` | Firefighters | Pull or stow a hose line |
+| `report` | `<prefix>:fd911` | Anyone | Report an emergency, client side |
+| `hire` | `<prefix>:fdhire <id> [dept]` | Officers | Hire the player in front of you |
+| `dismiss` | `<prefix>:fdfire <id> [reason]` | Officers | Dismiss a firefighter |
+| `rank` | `<prefix>:fdrank <id> <rank>` | Officers | Promote or demote |
+| `certify` | `<prefix>:fdcert <id> <cert>` | Officers | Sign off training by hand |
+| `clear` | `<prefix>:fdclear [callId]` | Officers | Close a call |
+| `dispatch` | `<prefix>:fdcall <type> [here]` | Admins | Dispatch a call |
+| `experience` | `<prefix>:fdxp <id> <amount>` | Admins | Adjust an XP total |
+| `editor` | `set` | Admins | The in-game config editor |
+
+Only `menu` ships bound to a key. The terminal and the hose line are registered
+unbound, because F7 and the obvious alternatives are usually already taken on a
+server that has been running a while — give them a key in `keybinds` if they are
+free on yours. Players can rebind any of them under Settings → Key Bindings →
+FiveM.
+
+### The terminal
+
+`/<prefix>:mdt`, the department menu, or the horn from the seat of an apparatus
+opens the mobile data terminal. Like every other screen in the job it is a
+`DAG.Menu` definition, so it renders through ox_lib, qb-menu, the bundled NUI
+interface, or the chat fallback — it is not a second NUI app and does not need
+one.
+
+- **Active calls** — the board, with respond on each.
+- **Call history** — every closed call with its response time, what was worked,
+  and whether anyone was lost. Backed by the SQL call log, and by memory on a
+  server with no database.
+- **Incident reports** — filed against a call, inheriting the type, location,
+  casualty count and crew from the record rather than asking the author to
+  retype them. Filing pays a bonus once per call, or nobody ever files one.
+- **Personnel** — the department's records, ranks, certifications, and who is on
+  duty right now.
+- **Billing** — raise an invoice against whoever is standing at the terminal,
+  from a call or for an amount; the outstanding ledger; void, for officers.
+- **Finances** — the department account and, for officers, withdrawals.
+
+A citizen who is not a firefighter gets the same terminal as a bill payer: the
+invoices raised against them, and a way to settle each one.
+
+### Billing
+
+No two frameworks agree on what an invoice is — ESX has a billing table, QB has
+phone invoices, Ox Core has neither — so **who collects the money** is the first
+decision, and everything else hangs off it.
+
+```lua
+Config.Firefighter.billing = {
+    settlement = 'auto',      -- auto, framework, department
+    provider = 'auto',        -- auto, internal, esx_billing, qb-phone, none
+    split = { author = 0.0, crew = 0.0, department = 1.0 },
+    society = { enabled = true, provider = 'auto', account = 'lsfd' },
+    fees = { response = 250, perFire = 75, perLitre = 0.4, ems = 400,
+             transport = 600, extrication = 850, hazmat = 1200, falseAlarm = 300 },
+    tax = 0.0,
+    autoBill = { playerCaused = true }
+}
+```
+
+**`settlement = 'framework'`** hands the invoice to your framework's billing
+resource — `esx_billing`, a `qb-phone` invoice — and it owns collecting it. That
+is the most native option, and what to pick if you want bills to appear where
+your players already look for them. The cost is that the framework then decides
+where the money goes, usually straight into its own society account, and it never
+tells this job the invoice was paid. **The split cannot apply**: the job refuses
+to collect such an invoice a second time, and says so at startup if one is
+configured anyway.
+
+**`settlement = 'department'`** keeps the ledger here and moves the money through
+the framework's own accounts with `Bridge.RemoveMoney` — still your framework's
+bank, on every framework, with nothing else installed. Because the department is
+collecting, **the split applies**.
+
+**`auto`** picks `framework` when a billing resource is running and nothing here
+wants a cut, and `department` otherwise. Whichever it lands on is printed at
+startup, so there is no guessing:
+
+```
+[dag-firejob] billing: settled by department, delivered through qb-phone,
+              society qb-management, wages from government
+```
+
+#### The split
+
+```lua
+Config.Firefighter.billing.split = {
+    author = 0.2,     -- the firefighter or medic who raised it
+    crew = 0.0,       -- shared between whoever worked the call
+    department = 0.8
+}
+```
+
+Anything not named goes to the department, so `{ author = 0.2 }` is a 20/80. The
+crew share is divided between the responders on the call the invoice came from. A
+share for somebody who has logged off stays with the department rather than
+vanishing, and the whole thing defaults to 100% department.
+
+#### Where wages come from
+
+```lua
+Config.Firefighter.pay.funding = 'government'   -- or 'department'
+```
+
+**`government`** is the default, and how most servers run a whitelisted job: pay
+is created when it is earned.
+
+**`department`** means wages, report bonuses and the rest come out of the
+department's own account, funded by what it bills and by academy fees. A
+department that has not been billing **runs out of money and cannot pay its
+crews** — they get what is there, are told how much is short, and still earn the
+experience. That is the point of choosing it.
+
+An invoice raised from a call is **priced from what happened on it**: turning out
+to a false alarm and putting out a working fire with two patients are not the
+same bill, and typing a number into the box does not override the schedule when
+billing for a call.
+
+The one invoice raised without anybody asking is for a **player-caused
+incident** — the driver whose own car burned, or who wrapped it round a pole —
+because that is the only case where the server knows who to bill without being
+told. Turn it off with `autoBill.playerCaused = false`.
+
+Provider event names are configuration rather than literals, so a fork that
+renamed `qb-phone:client:AddInvoice` is retargeted in `config.lua` instead of in
+the module.
+
+### Job definitions come from the framework
+
+Every framework keeps its job definitions somewhere different, and the job reads
+whichever one is actually in use rather than assuming:
+
+| Framework | Read from |
+| --- | --- |
+| QBCore / QBus | `qb-core/shared/jobs.lua`, in memory |
+| Qbox | `qbx_core/shared/jobs.lua`, in memory |
+| ESX | the `jobs` and `job_grades` tables, by query |
+| Ox Core | groups |
+| standalone, or a framework that cannot be read | `config.lua` |
+
+This is not decoration. A department pointed at a job the framework has never
+heard of cannot hire anybody, so the mismatch is **named at startup**:
+
+```
+[dag-firejob] job definitions: 12 from qb-core/shared/jobs.lua
+[dag-firejob] WARNING: department safd wants the job "safd", which
+              qb-core/shared/jobs.lua does not define
+[dag-firejob] WARNING: job "lsfd" has no grade 5 for the Battalion Chief rank
+```
+
+Hiring or promoting into a grade the framework does not define is refused with
+that reason rather than leaving somebody in a job that does not work, and a
+promotion announces the framework's own label for the grade rather than the one
+this config guessed.
 
 ### Configuring it in game
 
@@ -688,6 +848,10 @@ Everything a client can ask for is re-checked against state the server owns:
 - The in-game editor is admin-only, on the command and on the menu path alike,
   and it reads the editing player's position from their ped like everything
   else.
+- Every terminal endpoint checks employment, and the ones that spend money check
+  command authority: raising an invoice needs the roster, voiding one and drawing
+  on the department account need an officer, and an invoice can only be settled
+  by the person it was raised against.
 
 The one thing taken on trust is the position of a hydrant prop, because the
 server cannot enumerate map objects; the player and their apparatus still have
@@ -749,6 +913,10 @@ Fire.Dispatch.Create('structure', { coords = vector3(...), label = 'Motel 6' })
 Fire.Events.Trigger(source, 'medical')          -- your resource saw something
 Fire.Departments.Hire(officer, target, 'lsfd', function(ok, reason) end)
 Fire.Academy.Catalogue(source)
+Fire.Billing.Create({ identifier = id, amount = 500, reason = 'Callout' })
+Fire.Billing.Estimate(call)                     -- what a call is worth
+Fire.Jobs.Get('lsfd')                           -- as the framework defines it
+Fire.Mdt.History('lsfd', 10, function(rows) end)
 Fire.Progression.Leaderboard(10, function(rows) end)
 Fire.State.Roster('lsfd')
 ```
@@ -758,8 +926,9 @@ renderer and nozzle, `Fire.Hose` lays lines, `Fire.Uniform` dresses the ped, and
 `Fire.Menus.Refresh()` rebuilds every menu from the current state — registering
 a menu id again is the supported way to update a live board.
 
-Things deliberately left as extension points: an MDT or scanner (subscribe to
-the `fire:radio` client event), appearance-resource integration
+Things deliberately left as extension points: a scanner or dispatch feed for
+other services (subscribe to the `fire:radio` client event), a bespoke NUI skin
+for the terminal, appearance-resource integration
 (`Config.Firefighter.uniforms.provider`), and vRP hiring, which needs
 `ExtendAdapter('vrp', { setJob = ... })` for your fork.
 

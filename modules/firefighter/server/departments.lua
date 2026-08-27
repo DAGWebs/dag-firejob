@@ -14,6 +14,28 @@ local Database = Fire.Database
 local Departments = {}
 Fire.Departments = Departments
 
+-- The framework's own label for a grade when it can be read, so a promotion
+-- says what the framework says rather than what this config guessed.
+local function gradeLabel(departmentId, grade, fallback)
+    local department = Shared.Department(departmentId)
+    if not department or not Fire.Jobs then return fallback end
+    return Fire.Jobs.GradeLabel(department.job, grade, fallback)
+end
+
+Departments.GradeLabel = gradeLabel
+
+-- Hiring into a grade the framework has never heard of leaves a player in a
+-- job that does not work, so it is refused with something readable.
+local function gradeExists(departmentId, grade)
+    local department = Shared.Department(departmentId)
+    if not department or not Fire.Jobs or not Fire.Jobs.Loaded() then return true end
+    if not Fire.Jobs.Get(department.job) then return false, 'job_not_defined' end
+    if not Fire.Jobs.Grade(department.job, grade) then return false, 'grade_not_defined' end
+    return true
+end
+
+Departments.GradeExists = gradeExists
+
 local function log(identifier, departmentId, action, actor, detail)
     if not Database.Available() or (Shared.Settings().database or {}).logCalls == false then return end
 
@@ -94,6 +116,9 @@ function Departments.Hire(actor, target, departmentId, callback)
         if profile.department == departmentId then return callback(false, 'already_employed') end
 
         local grade = Shared.GradeFor(profile.xp)
+        local defined, problem = gradeExists(departmentId, grade)
+        if not defined then return callback(false, problem) end
+
         if not Bridge.SetJob(target, department.job, grade) then
             return callback(false, 'framework_rejected')
         end
@@ -166,10 +191,14 @@ function Departments.SetRank(actor, target, rankId, callback)
 
     local department = Shared.Department(departmentId)
     local grade = tonumber(rank.grade) or 0
+
+    local defined, problem = gradeExists(departmentId, grade)
+    if not defined then return callback(false, problem) end
+
     if department and Bridge.Supports('setJob') then Bridge.SetJob(target, department.job, grade) end
 
     log(identifier, departmentId, 'rank', Bridge.GetIdentifier(actor), { grade = grade, rank = rank.id })
-    Bridge.Notify(target, ('You are now a %s.'):format(rank.label), 'inform', 8000)
+    Bridge.Notify(target, ('You are now a %s.'):format(gradeLabel(departmentId, grade, rank.label)), 'inform', 8000)
     callback(true, nil, profile, rank)
 end
 

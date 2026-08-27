@@ -7,6 +7,7 @@ local SERVER_FILES = {
     'modules/firefighter/server/state.lua',
     'modules/firefighter/server/incident.lua',
     'modules/firefighter/server/progression.lua',
+    'modules/firefighter/server/jobs.lua',
     'modules/firefighter/server/departments.lua',
     'modules/firefighter/server/billing.lua',
     'modules/firefighter/server/dispatch.lua',
@@ -473,4 +474,341 @@ test('a provider that is not running is not used', function()
     loadServer()
     Config.Firefighter.billing.provider = 'esx_billing'
     assertNil(DAG.Fire.Billing.Provider(), 'esx_billing is not started')
+end)
+
+-- Settlement ------------------------------------------------------------------
+
+-- The two ways of settling are a real choice, not a preference: if the
+-- framework collects, it also decides where the money goes.
+test('with no billing resource the department always collects', function()
+    loadServer()
+    assertEq(DAG.Fire.Billing.Settlement(), 'department')
+
+    Config.Firefighter.billing.settlement = 'framework'
+    assertEq(DAG.Fire.Billing.Settlement(), 'department', 'nothing is running to hand it to')
+end)
+
+test('a billing resource collects when nothing here wants a cut', function()
+    harness.resourceStates['qb-phone'] = 'started'
+    loadServer()
+
+    assertEq(DAG.Fire.Billing.Settlement(), 'framework')
+
+    Config.Firefighter.billing.split.author = 0.2
+    assertEq(DAG.Fire.Billing.Settlement(), 'department', 'a split needs us to be the one collecting')
+end)
+
+test('an invoice the framework is collecting is not collected twice', function()
+    harness.resourceStates['qb-phone'] = 'started'
+    loadServer()
+    place(1)
+    DAG.Framework.AddMoney(1, 'bank', 1000, 'test')
+
+    local invoice = DAG.Fire.Billing.Create({ identifier = 'license:1', amount = 250, target = 1 })
+    assertTrue(invoice.delegated)
+
+    local ok, reason = DAG.Fire.Billing.Pay(1, invoice.reference)
+    assertFalse(ok)
+    assertEq(reason, 'settled_by_framework')
+    assertEq(DAG.Framework.GetMoney(1, 'bank'), 1000, 'the phone will take it, not us')
+end)
+
+-- Revenue split ------------------------------------------------------------------
+
+test('a paid invoice is split with whoever raised it', function()
+    loadServer()
+    Config.Firefighter.billing.split = { author = 0.2, crew = 0.0 }
+
+    onDuty(1)
+    place(2)
+    DAG.Framework.AddMoney(2, 'bank', 1000, 'test')
+
+    local invoice = DAG.Fire.Billing.Create({
+        identifier = 'license:2', amount = 500, raisedBy = 'license:1'
+    })
+    local ok, _, _, breakdown = DAG.Fire.Billing.Pay(2, invoice.reference)
+
+    assertTrue(ok)
+    assertEq(breakdown.author, 100, 'twenty per cent')
+    assertEq(breakdown.department, 400)
+    assertEq(DAG.Framework.GetMoney(1, 'bank'), 100)
+    assertEq(DAG.Fire.Billing.Balance(), 400)
+end)
+
+test('the crew share is split between whoever worked the call', function()
+    loadServer()
+    Config.Firefighter.billing.split = { author = 0.0, crew = 0.5 }
+
+    onDuty(1)
+    onDuty(3)
+    place(2)
+    DAG.Framework.AddMoney(2, 'bank', 1000, 'test')
+
+    -- A closed call is what says who the crew was.
+    DAG.Fire.Mdt.history['FD-0001'] = {
+        id = 'FD-0001',
+        responders = { { identifier = 'license:1' }, { identifier = 'license:3' } }
+    }
+
+    local invoice = DAG.Fire.Billing.Create({
+        identifier = 'license:2', amount = 400, callId = 'FD-0001'
+    })
+    local _, _, _, breakdown = DAG.Fire.Billing.Pay(2, invoice.reference)
+
+    assertEq(breakdown.crew, 200)
+    assertEq(DAG.Framework.GetMoney(1, 'bank'), 100)
+    assertEq(DAG.Framework.GetMoney(3, 'bank'), 100)
+    assertEq(breakdown.department, 200)
+end)
+
+-- A share for somebody who logged off has to go somewhere, and the department
+-- is the only place it can go without inventing money.
+test('a share nobody is online to take stays with the department', function()
+    loadServer()
+    Config.Firefighter.billing.split = { author = 0.5 }
+    place(2)
+    DAG.Framework.AddMoney(2, 'bank', 1000, 'test')
+
+    local invoice = DAG.Fire.Billing.Create({
+        identifier = 'license:2', amount = 400, raisedBy = 'license:99'
+    })
+    local _, _, _, breakdown = DAG.Fire.Billing.Pay(2, invoice.reference)
+
+    assertEq(breakdown.author, 0)
+    assertEq(breakdown.department, 400)
+    assertEq(DAG.Fire.Billing.Balance(), 400)
+end)
+
+test('the whole invoice goes to the department by default', function()
+    loadServer()
+    place(2)
+    DAG.Framework.AddMoney(2, 'bank', 1000, 'test')
+
+    local invoice = DAG.Fire.Billing.Create({ identifier = 'license:2', amount = 300, raisedBy = 'license:1' })
+    local _, _, _, breakdown = DAG.Fire.Billing.Pay(2, invoice.reference)
+
+    assertEq(breakdown.author, 0)
+    assertEq(breakdown.department, 300)
+end)
+
+-- Funding ------------------------------------------------------------------------
+
+test('government funding pays wages out of nothing, as it always did', function()
+    loadServer()
+    assertEq(DAG.Fire.Billing.Funding(), 'government')
+
+    local funded, shortfall = DAG.Fire.Billing.Fund(5000, 'test')
+    assertEq(funded, 5000)
+    assertEq(shortfall, 0)
+    assertEq(DAG.Fire.Billing.Balance(), 0, 'and nothing was drawn down')
+end)
+
+-- The point of department funding: a department that has not billed enough
+-- cannot pay its crews, and has to be told rather than silently paying zero.
+test('department funding pays what the department has and reports the rest', function()
+    loadServer()
+    Config.Firefighter.pay.funding = 'department'
+    DAG.Fire.Billing.Deposit(300)
+
+    local funded, shortfall = DAG.Fire.Billing.Fund(500, 'test')
+    assertEq(funded, 300)
+    assertEq(shortfall, 200)
+    assertEq(DAG.Fire.Billing.Balance(), 0)
+
+    local none, missing = DAG.Fire.Billing.Fund(100, 'test')
+    assertEq(none, 0)
+    assertEq(missing, 100)
+end)
+
+test('a call closed by a broke department pays nothing and says so', function()
+    loadServer()
+    Config.Firefighter.pay.funding = 'department'
+    onDuty(1)
+
+    local call = DAG.Fire.Dispatch.Create('structure')
+    DAG.Fire.Dispatch.Join(1, call.id)
+    harness.placePlayer(1, vector3(call.coords.x, call.coords.y, call.coords.z))
+    DAG.Fire.Dispatch.Tick()
+
+    call.fires, call.victims = {}, {}
+    DAG.Fire.Dispatch.Tick()
+
+    assertEq(DAG.Framework.GetMoney(1, 'bank'), 0, 'the account is empty')
+    assertTrue(DAG.Fire.State.ProfileFor('license:1').xp > 0, 'the experience is still earned')
+end)
+
+test('a department that has been billing can pay its crews', function()
+    loadServer()
+    Config.Firefighter.pay.funding = 'department'
+    onDuty(1)
+    DAG.Fire.Billing.Deposit(50000)
+
+    local call = DAG.Fire.Dispatch.Create('structure')
+    DAG.Fire.Dispatch.Join(1, call.id)
+    harness.placePlayer(1, vector3(call.coords.x, call.coords.y, call.coords.z))
+    DAG.Fire.Dispatch.Tick()
+
+    call.fires, call.victims = {}, {}
+    DAG.Fire.Dispatch.Tick()
+
+    local wage = DAG.Framework.GetMoney(1, 'bank')
+    assertTrue(wage > 0)
+    assertEq(DAG.Fire.Billing.Balance(), 50000 - wage, 'and it came out of the department')
+end)
+
+test('an academy fee is department income', function()
+    loadServer()
+    onDuty(1)
+    local academy = DAG.Fire.Shared.Settings().academy
+    harness.placePlayer(1, vector3(academy.classroom.x, academy.classroom.y, academy.classroom.z))
+    DAG.Framework.AddMoney(1, 'bank', 1000, 'test')
+
+    assertTrue(DAG.Fire.Academy.Enrol(1, 'ems'))
+    assertEq(DAG.Fire.Billing.Balance(), 250, 'the fee went to the department')
+end)
+
+-- Job definitions ---------------------------------------------------------------
+
+-- Enough of a core for the adapters to load against: they register callbacks
+-- and useable items the moment the resource starts.
+local function stubQb(jobs)
+    harness.resourceStates['qb-core'] = 'started'
+    harness.exportTargets['qb-core'] = {
+        GetCoreObject = function()
+            return {
+                Shared = { Jobs = jobs },
+                Functions = {
+                    CreateCallback = function() end,
+                    CreateUseableItem = function() end,
+                    HasPermission = function() return false end,
+                    GetPlayer = function(playerSource)
+                        return {
+                            PlayerData = {
+                                citizenid = ('license:%s'):format(tostring(playerSource)),
+                                job = { name = 'unemployed', grade = { level = 0 } }
+                            },
+                            Functions = {
+                                SetJob = function() return true end,
+                                SetJobDuty = function() return true end,
+                                GetMoney = function() return 0 end,
+                                AddMoney = function() return true end,
+                                RemoveMoney = function() return true end,
+                                GetItemByName = function() return nil end,
+                                AddItem = function() return true end,
+                                RemoveItem = function() return true end
+                            }
+                        }
+                    end
+                }
+            }
+        end
+    }
+end
+
+local function loadWith(adapter)
+    return harness.loadServer({
+        adapters = { adapter },
+        shared = { 'modules/firefighter/config.lua', 'modules/firefighter/shared.lua' },
+        modules = { 'storage', 'commands', 'access', 'repository' },
+        files = SERVER_FILES
+    })
+end
+
+-- Every framework keeps them somewhere different, and the job reads whichever
+-- one is in use rather than assuming.
+test('QBCore job definitions are read out of shared/jobs.lua', function()
+    stubQb({
+        lsfd = {
+            label = 'Los Santos Fire',
+            grades = {
+                ['0'] = { name = 'Probationary', payment = 500 },
+                ['3'] = { name = 'Lieutenant', payment = 1100 }
+            }
+        }
+    })
+    loadWith('qb')
+
+    local loaded
+    DAG.Fire.Jobs.Load(function(_, from) loaded = from end)
+
+    assertEq(loaded, 'qb-core/shared/jobs.lua')
+    assertEq(DAG.Fire.Jobs.Get('lsfd').label, 'Los Santos Fire')
+    assertEq(DAG.Fire.Jobs.Grade('lsfd', 3).label, 'Lieutenant')
+    assertNil(DAG.Fire.Jobs.Grade('lsfd', 1), 'a grade the framework does not define')
+end)
+
+test('ESX job definitions are read out of the database', function()
+    harness.resourceStates.es_extended = 'started'
+    harness.resourceStates.oxmysql = 'started'
+    harness.exportTargets.es_extended = {
+        getSharedObject = function()
+            return {
+                RegisterServerCallback = function() end,
+                RegisterUsableItem = function() end,
+                GetPlayerFromId = function() return nil end
+            }
+        end
+    }
+    harness.exportTargets.oxmysql = {
+        query = function(_, query, _, reply)
+            if query:find('FROM `jobs`', 1, true) then
+                return reply({ { name = 'lsfd', label = 'Los Santos Fire' } })
+            end
+            reply({
+                { job_name = 'lsfd', grade = 0, name = 'probationary', label = 'Probationary', salary = 500 },
+                { job_name = 'lsfd', grade = 5, name = 'chief', label = 'Battalion Chief', salary = 1800 }
+            })
+        end,
+        update = function(_, _, _, reply) if reply then reply(1) end end,
+        insert = function(_, _, _, reply) if reply then reply(1) end end
+    }
+
+    loadWith('esx')
+    DAG.Fire.Database.Detect()
+
+    local loaded
+    DAG.Fire.Jobs.Load(function(_, from) loaded = from end)
+
+    assertEq(loaded, 'esx jobs table')
+    assertEq(DAG.Fire.Jobs.Grade('lsfd', 5).label, 'Battalion Chief')
+end)
+
+test('standalone falls back to what config says', function()
+    loadServer()
+
+    local loaded
+    DAG.Fire.Jobs.Load(function(_, from) loaded = from end)
+
+    assertEq(loaded, 'config')
+    assertTrue(DAG.Fire.Jobs.Get('lsfd') ~= nil, 'the departments are still describable')
+    assertEq(DAG.Fire.Jobs.Grade('lsfd', 5).label, 'Battalion Chief')
+end)
+
+-- A department pointed at a job the framework has never heard of cannot hire
+-- anybody, and saying so at startup beats a hire that silently does nothing.
+test('a department pointed at a job the framework does not define is reported', function()
+    stubQb({ lsfd = { label = 'Fire', grades = { ['0'] = { name = 'Rookie' } } } })
+    loadWith('qb')
+    DAG.Fire.Jobs.Load()
+
+    local problems = table.concat(DAG.Fire.Jobs.Validate(), '\n')
+    assertTrue(problems:find('safd', 1, true) ~= nil, 'the county department has no job')
+    assertTrue(problems:find('grade 5', 1, true) ~= nil, 'and the city one has no chief grade')
+end)
+
+test('hiring into a grade the framework does not define is refused', function()
+    stubQb({ lsfd = { label = 'Fire', grades = { ['0'] = { name = 'Rookie' } } } })
+    loadWith('qb')
+    DAG.Fire.Jobs.Load()
+
+    harness.placePlayer(1, vector3(0.0, 0.0, 0.0))
+    harness.placePlayer(2, vector3(0.0, 0.0, 0.0))
+    harness.aceAllowed[1] = { ['dag-template.lsfd.command'] = true }
+
+    local reason
+    DAG.Fire.Departments.Hire(1, 2, 'lsfd', function(_, failure) reason = failure end)
+    assertNil(reason, 'grade 0 exists, so the hire goes through')
+
+    DAG.Fire.Departments.SetRank(1, 2, 'chief', function(_, failure) reason = failure end)
+    assertEq(reason, 'grade_not_defined')
 end)

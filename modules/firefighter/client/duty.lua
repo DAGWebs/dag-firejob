@@ -13,7 +13,6 @@ local Suppression = Fire.Suppression
 local Duty = {}
 Fire.Duty = Duty
 
-local prefix = Shared.Settings().commandPrefix or Bridge.namespace
 
 local function menuId(name)
     return ('%s:fire:%s'):format(Bridge.namespace, name)
@@ -250,19 +249,31 @@ end)
 
 -- Menu entry point ----------------------------------------------------------
 
-RegisterCommand(prefix .. ':fdmenu', function()
+-- Names and keys both come from config, and either can be turned off: a
+-- server that already has something on F6, or on /mdt, keeps it.
+local function command(key, label, handler)
+    local name = Shared.Command(key)
+    if not name then return end
+
+    RegisterCommand(name, handler, false)
+
+    local bind = Shared.Keybind(key)
+    if bind then RegisterKeyMapping(name, label, 'keyboard', bind) end
+end
+
+Duty.BindCommand = command
+
+command('menu', 'Firefighter menu', function()
     if not Shared.Enabled() then return end
     if Fire.Menus then return Fire.Menus.Open() end
     DAG.Menu.Open(menuId('main'))
-end, false)
+end)
 
-RegisterKeyMapping(prefix .. ':fdmenu', 'Firefighter menu', 'keyboard', 'F6')
-
-RegisterCommand(prefix .. ':fdhose', function()
+command('hose', 'Pull a hose line', function()
     if not Client.OnDuty() then return Bridge.Notify('You are not on duty.', 'error') end
     Suppression.Toggle('hose')
-end, false)
+end)
 
-RegisterCommand(prefix .. ':fd911', function(_, args)
+command('report', 'Report an emergency', function(_, args)
     Fire.Events.Report(args[1] or 'structure')
-end, false)
+end)

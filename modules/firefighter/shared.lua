@@ -522,6 +522,29 @@ function Shared.FormatMoney(amount)
     return ('%s$%s'):format((tonumber(amount) or 0) < 0 and '-' or '', grouped)
 end
 
+-- Commands and keys --------------------------------------------------------
+
+-- The registered name of one of the job's commands, or nil when the server
+-- has turned it off. Everything that registers a command goes through this, so
+-- there is one place to rename or disable any of them.
+function Shared.Command(key)
+    local commands = Shared.Settings().commands or {}
+    local name = commands[key]
+    if name == false or name == nil then return nil end
+    if type(name) ~= 'string' or name == '' then return nil end
+    return name
+end
+
+-- The key a command is bound to, or nil for "registered, but unbound". A
+-- server that already has something on F6 sets this to false rather than
+-- losing the command.
+function Shared.Keybind(key)
+    local binds = Shared.Settings().keybinds or {}
+    local bind = binds[key]
+    if type(bind) ~= 'string' or bind == '' then return nil end
+    return bind
+end
+
 -- Live configuration -------------------------------------------------------
 --
 -- The packaged config is the baseline; anything edited in game is stored as a
@@ -531,6 +554,14 @@ end
 -- Captured before anything can edit it, so applying overrides is always
 -- baseline-plus-changes rather than change-on-top-of-change.
 Shared.defaults = Shared.DeepCopy(Config.Firefighter or {})
+
+-- Re-takes the baseline from the live config. A resource that legitimately
+-- changes Config.Firefighter at startup has to call this, or the first time an
+-- in-game edit is applied its change is rebuilt away.
+function Shared.Rebase()
+    Shared.defaults = Shared.DeepCopy(Config.Firefighter or {})
+    return Shared.defaults
+end
 
 -- Catalogue lists are merged by id rather than by position: a server owner
 -- inserting a station at the top of config.lua must not silently rename

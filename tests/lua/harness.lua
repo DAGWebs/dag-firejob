@@ -277,6 +277,9 @@ function harness.loadServer(opts)
     -- Shared scripts that sit between the bridge and the modules, matching the
     -- shared_scripts order in fxmanifest.lua.
     for _, file in ipairs(opts.shared or {}) do harness.load(file) end
+    -- A last chance to change config before anything reads it, which is what a
+    -- server owner editing config.lua actually does.
+    if opts.configure then opts.configure(_G.Config) end
     harness.load('bridge/server.lua')
     for _, adapter in ipairs(opts.adapters or { 'standalone' }) do
         harness.load('bridge/server/' .. adapter .. '.lua')
@@ -295,6 +298,7 @@ function harness.loadClient(opts)
     harness.loadConfig()
     harness.load('bridge/shared.lua')
     for _, file in ipairs(opts.shared or {}) do harness.load(file) end
+    if opts.configure then opts.configure(_G.Config) end
     harness.load('bridge/client.lua')
     for _, adapter in ipairs(opts.adapters or { 'standalone' }) do
         harness.load('bridge/client/' .. adapter .. '.lua')

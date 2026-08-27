@@ -21,8 +21,8 @@ Config.Firefighter = {
     -- `set` is a short, generic command name: change it if another resource on
     -- your server already owns it.
     editor = {
-        enabled = true,
-        command = 'set'
+        enabled = true
+        -- The command is `commands.editor` above.
     },
 
     -- Certifications gate apparatus, extrication, treatment, and containment.
@@ -30,9 +30,45 @@ Config.Firefighter = {
     -- keep the ranks purely cosmetic.
     enforceCertifications = true,
 
-    -- Prefix for the commands this job registers, so two resources built from
-    -- the template never fight over a name. Set to 'fd' for /fd:duty.
+    -- Commands and keys ------------------------------------------------------
+    -- Every command this job registers and every key it binds is named here.
+    -- The defaults are prefixed with the resource name so nothing collides on
+    -- a busy server; shorten `commandPrefix` to 'fd' for /fd:duty, or give any
+    -- single command a name of its own. Set one to false and it is not
+    -- registered at all.
     commandPrefix = resource,
+
+    commands = {
+        -- Firefighters
+        duty = resource .. ':duty',
+        roster = resource .. ':roster',
+        menu = resource .. ':fdmenu',
+        hose = resource .. ':fdhose',
+        mdt = resource .. ':mdt',
+        -- Anyone
+        emergency = resource .. ':911',
+        report = resource .. ':fd911',
+        -- Officers
+        hire = resource .. ':fdhire',
+        dismiss = resource .. ':fdfire',
+        rank = resource .. ':fdrank',
+        certify = resource .. ':fdcert',
+        clear = resource .. ':fdclear',
+        -- Administration
+        dispatch = resource .. ':fdcall',
+        experience = resource .. ':fdxp',
+        editor = 'set'
+    },
+
+    -- Key bindings, as FiveM key names ('F6', 'HOME', 'NUMPAD5'). Set one to
+    -- false to register the command without a key, which is what to do when
+    -- something else on your server already owns it. Players can always
+    -- rebind these under Settings, Key Bindings, FiveM.
+    keybinds = {
+        menu = 'F6',
+        mdt = false,
+        hose = false
+    },
 
     -- Sent to Bridge.SetDuty when clocking on/off. Frameworks that do not
     -- implement duty simply report it as unsupported.
@@ -826,6 +862,14 @@ Config.Firefighter = {
     },
 
     pay = {
+        -- Where wages come from.
+        --   government   an external budget: pay is created when it is earned,
+        --                which is how most servers run a whitelisted job.
+        --   department   the department's own account, funded by what it
+        --                bills. A department that has not billed enough runs
+        --                out of money and cannot pay its crews, which is the
+        --                point of choosing it.
+        funding = 'government',
         account = 'bank',
         -- Every responder is paid; the call payout is split between them so a
         -- full crew is not a pay cut but a solo run is not free money either.
@@ -845,8 +889,38 @@ Config.Firefighter = {
     -- the invoice into a billing resource when one is running.
     billing = {
         enabled = true,
+
+        -- Who collects the money, which is the decision everything else hangs
+        -- off:
+        --   framework    the framework's billing resource owns the invoice end
+        --                to end. It decides where the money goes, so the split
+        --                below cannot apply.
+        --   department   the department's ledger collects it, moving the money
+        --                through the framework's own accounts. The split
+        --                applies, and the department account is real.
+        --   auto         framework when a billing resource is running and the
+        --                whole invoice was going to the department anyway;
+        --                otherwise department. The choice is printed at start.
+        settlement = 'auto',
+
         provider = 'auto',   -- auto, internal, esx_billing, qb-phone, none
         account = 'bank',
+
+        -- Where a paid invoice goes. Anything not named here goes to the
+        -- department, so { author = 0.2 } is a 20/80 split with the
+        -- firefighter who raised it. Shares are fractions of the invoice and
+        -- must not add up to more than 1.
+        --
+        -- Only applies when the department is collecting: a framework billing
+        -- resource pays itself, and cannot be asked to split.
+        split = {
+            author = 0.0,       -- the firefighter or medic who raised it
+            crew = 0.0,         -- shared between whoever worked the call
+            department = 1.0
+        },
+        -- A share for somebody who has logged off is kept by the department
+        -- rather than vanishing.
+        offlineSharesToDepartment = true,
         -- Where collected fees go. The internal balance is always authoritative;
         -- a society provider is mirrored into when one is available.
         society = {
@@ -884,8 +958,7 @@ Config.Firefighter = {
     -- Mobile data terminal ---------------------------------------------------
     mdt = {
         enabled = true,
-        command = 'mdt',
-        key = 'F7',
+        -- The command and key are in `commands` and `keybinds` above.
         -- Filing an incident report after a call is worth something, or nobody
         -- ever files one.
         reportBonus = { pay = 150, xp = 40 },

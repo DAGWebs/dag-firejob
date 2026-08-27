@@ -89,8 +89,13 @@ function Academy.Enrol(source, courseId)
     if not coords or not classroom or Shared.Distance(coords, classroom) > 8.0 then return false, 'not_at_academy' end
 
     local cost = tonumber(course.cost) or 0
-    if cost > 0 and not Bridge.RemoveMoney(source, 'bank', cost, 'firefighter:academy') then
-        return false, 'cannot_afford'
+    if cost > 0 then
+        if not Bridge.RemoveMoney(source, 'bank', cost, 'firefighter:academy') then
+            return false, 'cannot_afford'
+        end
+        -- Course fees are the department's income, which matters when the
+        -- department is the one paying the wages.
+        if Fire.Billing then Fire.Billing.Deposit(cost) end
     end
 
     enrolments[source] = {

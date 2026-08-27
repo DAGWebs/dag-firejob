@@ -6,10 +6,13 @@ local SERVER_FILES = {
     'modules/firefighter/server/state.lua',
     'modules/firefighter/server/incident.lua',
     'modules/firefighter/server/progression.lua',
+    'modules/firefighter/server/jobs.lua',
     'modules/firefighter/server/departments.lua',
+    'modules/firefighter/server/billing.lua',
     'modules/firefighter/server/dispatch.lua',
     'modules/firefighter/server/academy.lua',
     'modules/firefighter/server/events.lua',
+    'modules/firefighter/server/mdt.lua',
     'modules/firefighter/server/api.lua'
 }
 

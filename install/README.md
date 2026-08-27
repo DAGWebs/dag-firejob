@@ -66,6 +66,13 @@ where your players already look for one:
 | `qb-phone` | An invoice on the phone | `billing.provider = 'qb-phone'` |
 | none | The terminal is the only place it appears | `billing.provider = 'internal'` |
 
+`billing.settlement` decides who actually takes the money. `framework` hands the
+invoice over end to end, which is the most native option but means the framework
+decides where the money goes and the revenue split cannot apply. `department`
+keeps the ledger here and moves the money through the framework's own accounts,
+which is what a revenue split or department-funded wages need. `auto` picks
+between them and prints which it chose.
+
 Collected fees go to the department account, which is tracked here. When
 `qb-management` or `esx_addonaccount` is running it is credited alongside so the
 rest of the server sees the money — set `billing.society.account` to the society
@@ -74,3 +81,12 @@ name your server uses (`lsfd` by default, matching the job name).
 Provider event names live in `Config.Firefighter.billing.providers`. A fork that
 renamed `qb-phone:client:AddInvoice` is retargeted there rather than in the
 module.
+
+## Job definitions
+
+The job reads them from wherever your framework keeps them — `shared/jobs.lua`
+on QBCore and Qbox, the `jobs` and `job_grades` tables on ESX, groups on Ox Core
+— and says at startup when a department points at a job or a grade the framework
+does not define. Fix the warning before hiring anybody: hiring into a grade the
+framework has never heard of is refused rather than leaving somebody in a job
+that does not work.

@@ -16,6 +16,12 @@ Fire.Billing = Billing
 local LEDGER = 'firefighter_billing'
 local invoices, sequence, balance = {}, 0, 0
 
+-- The running counter and the department balance, kept where the rest of the
+-- job's own data lives so they survive a restart with or without a database.
+local function persist()
+    DAG.Storage.Set(LEDGER, 'ledger', { sequence = sequence, balance = balance })
+end
+
 local function settings()
     return Shared.Settings().billing or {}
 end
@@ -56,6 +62,27 @@ function Billing.Provider()
         end
     end
     return nil
+end
+
+-- Which of the two ways this server settles an invoice. Resolved rather than
+-- assumed, and printed at startup, because it decides whether the split and
+-- the department account mean anything at all.
+function Billing.Settlement()
+    local wanted = settings().settlement or 'auto'
+    local provider = Billing.Provider()
+
+    if wanted == 'framework' then
+        -- Asking for the framework to collect when nothing is running to do it
+        -- would lose the invoice, so it falls back rather than disappearing.
+        return provider and 'framework' or 'department'
+    end
+    if wanted == 'department' or wanted == 'internal' then return 'department' end
+
+    -- auto: hand it over only when there is nothing here that wants a cut.
+    local split = settings().split or {}
+    local shared = (tonumber(split.author) or 0) + (tonumber(split.crew) or 0)
+    if provider and shared <= 0 then return 'framework' end
+    return 'department'
 end
 
 local function mirror(source, invoice)
@@ -124,6 +151,28 @@ function Billing.Balance()
     return balance
 end
 
+function Billing.Funding()
+    return (Shared.Settings().pay or {}).funding == 'department' and 'department' or 'government'
+end
+
+-- How much of a wage the department can actually cover. Under government
+-- funding that is always the whole thing; under department funding it is
+-- whatever has been billed and collected, and a department that has not earned
+-- enough pays what it can and says so.
+function Billing.Fund(amount, reason)
+    local wanted = math.floor(tonumber(amount) or 0)
+    if wanted <= 0 then return 0, 0 end
+    if Billing.Funding() == 'government' then return wanted, 0 end
+
+    local available = math.min(wanted, math.floor(balance))
+    if available > 0 then
+        balance = balance - available
+        persist()
+        Bridge.Debug('department funded %d of %d for %s', available, wanted, reason or 'wages')
+    end
+    return available, wanted - available
+end
+
 local function deposit(amount)
     balance = balance + amount
 
@@ -139,10 +188,6 @@ end
 Billing.Deposit = deposit
 
 -- Ledger -------------------------------------------------------------------
-
-local function persist()
-    DAG.Storage.Set(LEDGER, 'ledger', { sequence = sequence, balance = balance })
-end
 
 function Billing.Load()
     local stored = DAG.Storage.Get(LEDGER, 'ledger')
@@ -304,6 +349,10 @@ function Billing.Create(options)
         createdAt = GetGameTimer()
     }
 
+    -- A delegated invoice is recorded for the department's books and then
+    -- left alone: the framework's billing resource owns collecting it.
+    invoice.delegated = Billing.Settlement() == 'framework'
+
     invoices[invoice.reference] = invoice
     write(invoice)
 
@@ -346,11 +395,60 @@ function Billing.BillCall(call)
     })
 end
 
+-- Where a paid invoice goes. Shares are paid to real people where they are
+-- online; everything else, including a share for somebody who has logged off,
+-- stays with the department.
+function Billing.Distribute(invoice)
+    local split = settings().split or {}
+    local breakdown = { author = 0, crew = 0, department = 0 }
+
+    local function payTo(identifier, amount)
+        if amount <= 0 or not identifier then return 0 end
+
+        for _, playerId in ipairs(GetPlayers()) do
+            local other = tonumber(playerId)
+            if other and Bridge.GetIdentifier(other) == identifier then
+                if Bridge.AddMoney(other, settings().account or 'bank', amount,
+                    ('firefighter:%s'):format(invoice.reference)) then
+                    Bridge.Notify(other, ('Your share of %s: %s'):format(
+                        invoice.reference, Shared.FormatMoney(amount)), 'success')
+                    return amount
+                end
+            end
+        end
+        return 0
+    end
+
+    local authorShare = math.floor(invoice.amount * Shared.Clamp(tonumber(split.author) or 0, 0, 1))
+    breakdown.author = payTo(invoice.raisedBy, authorShare)
+
+    local crewShare = math.floor(invoice.amount * Shared.Clamp(tonumber(split.crew) or 0, 0, 1))
+    if crewShare > 0 and invoice.callId and Fire.Mdt then
+        local logged = Fire.Mdt.history[invoice.callId]
+        local crew = logged and logged.responders or {}
+        if #crew > 0 then
+            local each = math.floor(crewShare / #crew)
+            for _, responder in ipairs(crew) do
+                breakdown.crew = breakdown.crew + payTo(responder.identifier, each)
+            end
+        end
+    end
+
+    -- Whatever was not actually handed to somebody is the department's, which
+    -- is what makes an offline share stay in the books rather than vanish.
+    breakdown.department = invoice.amount - breakdown.author - breakdown.crew
+    if breakdown.department > 0 then deposit(breakdown.department) end
+    return breakdown
+end
+
 function Billing.Pay(source, reference)
     local invoice = invoices[reference]
     if not invoice then return false, 'unknown_invoice' end
     if invoice.paid then return false, 'already_paid' end
     if invoice.voided then return false, 'invoice_voided' end
+    -- The framework is collecting this one; taking the money here as well
+    -- would charge them twice.
+    if invoice.delegated then return false, 'settled_by_framework' end
 
     local identifier = Bridge.GetIdentifier(source)
     if identifier ~= invoice.identifier then return false, 'not_your_invoice' end
@@ -363,12 +461,12 @@ function Billing.Pay(source, reference)
     invoice.paid = true
     invoice.settledAt = GetGameTimer()
     write(invoice)
-    deposit(invoice.amount)
+    local breakdown = Billing.Distribute(invoice)
     persist()
 
     Bridge.Notify(source, ('Invoice %s paid: %s'):format(
         invoice.reference, Shared.FormatMoney(invoice.amount)), 'success')
-    return true, nil, invoice
+    return true, nil, invoice, breakdown
 end
 
 function Billing.Void(reference, reason)

@@ -15,6 +15,13 @@ local function paySettings()
     return Shared.Settings().pay or {}
 end
 
+-- How much of a wage the budget can cover. Billing owns that decision, but a
+-- server that deleted the module still pays its crews rather than erroring.
+local function fund(amount, reason)
+    if not Fire.Billing then return math.floor(tonumber(amount) or 0), 0 end
+    return Fire.Billing.Fund(amount, reason)
+end
+
 -- What the call is worth before it is divided up.
 function Progression.CallValue(call)
     local pay = paySettings()
@@ -128,12 +135,21 @@ function Progression.Award(call, reason)
             -- Money is only paid to a player who is still connected; the XP and
             -- the record are kept either way, so a crash on the way back to the
             -- station does not erase the call.
-            local paid = false
+            --
+            -- Under department funding the wage comes out of what the
+            -- department has actually billed, so a department that has not
+            -- earned enough pays what it can and the crew is told why.
+            local paid, shortfall = false, 0
             if amount > 0 and State.IsOnDuty(attendee.source) then
-                paid = Bridge.AddMoney(attendee.source, account, amount, ('firefighter:%s'):format(call.id))
-                if paid then
-                    profile.stats.earnings = (profile.stats.earnings or 0) + amount
-                    totalPaid = totalPaid + amount
+                local funded
+                funded, shortfall = fund(amount, ('wages:%s'):format(call.id))
+                if funded > 0 then
+                    paid = Bridge.AddMoney(attendee.source, account, funded, ('firefighter:%s'):format(call.id))
+                    if paid then
+                        amount = funded
+                        profile.stats.earnings = (profile.stats.earnings or 0) + funded
+                        totalPaid = totalPaid + funded
+                    end
                 end
             end
 
@@ -154,6 +170,11 @@ function Progression.Award(call, reason)
                     paid and Shared.FormatMoney(amount) or 'no pay (offline)',
                     xp
                 ), lost > 0 and 'inform' or 'success', 8000)
+
+                if shortfall > 0 then
+                    Bridge.Notify(attendee.source, ('The department is %s short on wages.'):format(
+                        Shared.FormatMoney(shortfall)), 'error', 8000)
+                end
                 TriggerClientEvent(Bridge.Event('fire:award'), attendee.source, {
                     callId = call.id,
                     amount = paid and amount or 0,

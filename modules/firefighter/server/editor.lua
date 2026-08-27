@@ -574,8 +574,9 @@ end
 Editor.Load()
 Editor.Apply(false)
 
-local command = settings().command or 'set'
+local command = Shared.Command('editor')
 
+if command then
 DAG.Commands.Register(command, function(source, args)
     if settings().enabled == false then return tell(source, 'the in-game editor is switched off') end
     if not DAG.Access.Allowed(source, Shared.Policy(nil, 'admin'), 'admin') then
@@ -597,10 +598,13 @@ end, {
     help = 'Configure the firefighter job in game.',
     arguments = { { name = 'key', help = 'fsstation, fsduty, fslist, fsremove...' } }
 })
+end
 
 CreateThread(function()
     Bridge.AwaitReady(10000)
-    if settings().enabled == false then return Bridge.Print('firefighter editor disabled by config') end
+    if settings().enabled == false or not command then
+        return Bridge.Print('firefighter editor disabled by config')
+    end
     Bridge.Print('firefighter editor ready: /%s fslist', command)
 end)
 

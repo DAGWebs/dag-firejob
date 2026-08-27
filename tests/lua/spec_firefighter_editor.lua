@@ -7,19 +7,28 @@ local SERVER_FILES = {
     'modules/firefighter/server/state.lua',
     'modules/firefighter/server/incident.lua',
     'modules/firefighter/server/progression.lua',
+    'modules/firefighter/server/jobs.lua',
     'modules/firefighter/server/departments.lua',
+    'modules/firefighter/server/billing.lua',
     'modules/firefighter/server/dispatch.lua',
     'modules/firefighter/server/academy.lua',
     'modules/firefighter/server/events.lua',
+    'modules/firefighter/server/mdt.lua',
     'modules/firefighter/server/api.lua'
 }
 
-local function loadServer()
+local function loadServer(configure)
     return harness.loadServer({
         adapters = { 'standalone' },
         shared = { 'modules/firefighter/config.lua', 'modules/firefighter/shared.lua' },
         modules = { 'storage', 'commands', 'access', 'repository' },
-        files = SERVER_FILES
+        files = SERVER_FILES,
+        configure = configure and function(config)
+            configure(config)
+            -- Editing the config after it was captured means re-taking the
+            -- baseline, exactly as a resource doing this at startup would.
+            DAG.Fire.Shared.Rebase()
+        end or nil
     })
 end
 
@@ -34,7 +43,7 @@ end
 
 -- Runs the editor command the way a player would type it.
 local function set(source, ...)
-    local command = harness.commands[Config.Firefighter.editor.command]
+    local command = harness.commands[DAG.Fire.Shared.Command('editor')]
     command.handler(source, { ... }, '')
 end
 
@@ -353,4 +362,43 @@ test('listing a station names every point with its number', function()
     assertTrue(text:find('duty 1', 1, true) ~= nil)
     assertTrue(text:find('duty 2', 1, true) ~= nil)
     assertTrue(text:find('spawn 1', 1, true) ~= nil)
+end)
+
+-- Commands and keys ---------------------------------------------------------
+
+-- A busy server already has something on the obvious names and keys, so every
+-- one of them has to be movable or switchable off.
+test('a command the server renamed is registered under the new name', function()
+    loadServer(function(config) config.Firefighter.commands.editor = 'fdconfig' end)
+    assertNil(harness.commands.set, 'the default name was not taken')
+    assertTrue(harness.commands.fdconfig ~= nil)
+end)
+
+test('a command the server switched off is not registered at all', function()
+    loadServer(function(config) config.Firefighter.commands.editor = false end)
+    assertNil(harness.commands.set)
+    assertNil(DAG.Fire.Shared.Command('editor'))
+end)
+
+test('every command the job registers is named in config', function()
+    loadServer()
+    local Shared = DAG.Fire.Shared
+
+    for _, key in ipairs({ 'duty', 'roster', 'emergency', 'dispatch', 'clear',
+        'hire', 'dismiss', 'rank', 'certify', 'experience' }) do
+        local name = Shared.Command(key)
+        assertTrue(name ~= nil, key .. ' has a name')
+        assertTrue(harness.commands[name] ~= nil, key .. ' is registered under it')
+    end
+end)
+
+test('a keybind is optional and defaults away from the ones servers already use', function()
+    loadServer()
+    local Shared = DAG.Fire.Shared
+
+    assertEq(Shared.Keybind('menu'), 'F6')
+    assertNil(Shared.Keybind('mdt'), 'the terminal ships unbound')
+
+    Config.Firefighter.keybinds.menu = false
+    assertNil(Shared.Keybind('menu'))
 end)

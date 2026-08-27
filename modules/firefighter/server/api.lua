@@ -15,9 +15,17 @@ local Departments = Fire.Departments
 local Progression = Fire.Progression
 local Academy = Fire.Academy
 
-local prefix = Shared.Settings().commandPrefix or Bridge.namespace
-
 Fire.Api = Fire.Api or {}
+
+-- Registering a command the server has switched off is how a job ends up
+-- fighting another resource for a name, so a missing name is simply not
+-- registered.
+local function command(key, handler, options)
+    local name = Shared.Command(key)
+    if not name then return nil end
+    DAG.Commands.Register(name, handler, options)
+    return name
+end
 
 local REASONS = {
     off_duty = 'You are not on duty.',
@@ -70,6 +78,8 @@ local REASONS = {
     already_employed = 'They already work for that department.',
     not_employed = 'They do not work for a department.',
     framework_cannot_hire = 'This framework cannot change jobs; hire them manually.',
+    job_not_defined = 'This framework does not define that department job. Check install/.',
+    grade_not_defined = 'This framework does not define that grade for the job.',
     framework_rejected = 'The framework refused the job change.',
     already_enrolled = 'You are already on a course.',
     not_enrolled = 'You are not on a course.',
@@ -574,11 +584,11 @@ local function report(source, message)
     Bridge.Notify(source, message, 'inform', 8000)
 end
 
-DAG.Commands.Register(prefix .. ':duty', function(source)
+command('duty', function(source)
     toggleDuty(source)
 end, { help = 'Clock on or off at a fire station duty point.', allowConsole = false })
 
-DAG.Commands.Register(prefix .. ':roster', function(source)
+command('roster', function(source)
     local roster = State.Roster()
     if #roster == 0 then return report(source, 'Nobody is on duty.') end
 
@@ -594,12 +604,12 @@ DAG.Commands.Register(prefix .. ':roster', function(source)
     report(source, ('On duty (%d): %s'):format(#roster, table.concat(lines, ', ')))
 end, { help = 'List the firefighters currently on duty.' })
 
-DAG.Commands.Register(prefix .. ':911', function(source, args)
+command('emergency', function(source, args)
     if source == 0 then return end
     local kind = args[1]
     if not kind then
         local kinds = ((Shared.Settings().events or {}).report or {}).kinds or {}
-        return report(source, ('Usage: /%s:911 <%s>'):format(prefix, table.concat(kinds, '|')))
+        return report(source, ('Usage: /%s <%s>'):format(Shared.Command('emergency'), table.concat(kinds, '|')))
     end
 
     local call, reason = Fire.Events.Report(source, kind)
@@ -610,14 +620,14 @@ end, {
     allowConsole = false
 })
 
-DAG.Commands.Register(prefix .. ':fdcall', function(source, args)
+command('dispatch', function(source, args)
     if not requireAdmin(source) then return end
 
     local kind = args[1]
     if not kind or not Shared.CallType(kind) then
         local names = {}
         for _, callType in ipairs(Shared.CallTypes()) do names[#names + 1] = callType.id end
-        return report(source, ('Usage: /%s:fdcall <%s> [here]'):format(prefix, table.concat(names, '|')))
+        return report(source, ('Usage: /%s <%s> [here]'):format(Shared.Command('dispatch'), table.concat(names, '|')))
     end
 
     local options = { force = true, source = 'command' }
@@ -636,7 +646,7 @@ end, {
     arguments = { { name = 'type', help = 'Call type id' }, { name = 'here', help = 'Use your position' } }
 })
 
-DAG.Commands.Register(prefix .. ':fdclear', function(source, args)
+command('clear', function(source, args)
     local target = args[1]
     if target then
         local call = State.GetCall(target)
@@ -655,10 +665,10 @@ DAG.Commands.Register(prefix .. ':fdclear', function(source, args)
     report(source, ('Cleared %d call(s).'):format(cleared))
 end, { help = 'Clear one call, or every open call.', arguments = { { name = 'callId', help = 'FD-0001' } } })
 
-DAG.Commands.Register(prefix .. ':fdhire', function(source, args)
+command('hire', function(source, args)
     if source == 0 then return end
     local target = tonumber(args[1])
-    if not target then return report(source, ('Usage: /%s:fdhire <playerId> [department]'):format(prefix)) end
+    if not target then return report(source, ('Usage: /%s <playerId> [department]'):format(Shared.Command('hire'))) end
 
     local profile = State.Profile(source)
     local record = State.Duty(source)
@@ -672,10 +682,10 @@ end, {
     allowConsole = false
 })
 
-DAG.Commands.Register(prefix .. ':fdfire', function(source, args)
+command('dismiss', function(source, args)
     if source == 0 then return end
     local target = tonumber(args[1])
-    if not target then return report(source, ('Usage: /%s:fdfire <playerId> [reason]'):format(prefix)) end
+    if not target then return report(source, ('Usage: /%s <playerId> [reason]'):format(Shared.Command('dismiss'))) end
 
     table.remove(args, 1)
     Departments.Terminate(source, target, table.concat(args, ' '), function(ok, reason, profile)
@@ -687,13 +697,13 @@ end, {
     allowConsole = false
 })
 
-DAG.Commands.Register(prefix .. ':fdrank', function(source, args)
+command('rank', function(source, args)
     if source == 0 then return end
     local target, rankId = tonumber(args[1]), args[2]
     if not target or not rankId then
         local names = {}
         for _, rank in ipairs(Shared.Ranks()) do names[#names + 1] = rank.id end
-        return report(source, ('Usage: /%s:fdrank <playerId> <%s>'):format(prefix, table.concat(names, '|')))
+        return report(source, ('Usage: /%s <playerId> <%s>'):format(Shared.Command('rank'), table.concat(names, '|')))
     end
 
     Departments.SetRank(source, target, rankId, function(ok, reason, profile, rank)
@@ -706,10 +716,10 @@ end, {
     allowConsole = false
 })
 
-DAG.Commands.Register(prefix .. ':fdcert', function(source, args)
+command('certify', function(source, args)
     local target, certification = tonumber(args[1]), args[2]
     if not target or not certification then
-        return report(source, ('Usage: /%s:fdcert <playerId> <certification>'):format(prefix))
+        return report(source, ('Usage: /%s <playerId> <certification>'):format(Shared.Command('certify')))
     end
 
     local identifier = Bridge.GetIdentifier(target)
@@ -731,11 +741,11 @@ end, {
     arguments = { { name = 'playerId', help = 'Server id' }, { name = 'certification', help = 'engine, ladder, ems, rescue, hazmat, command' } }
 })
 
-DAG.Commands.Register(prefix .. ':fdxp', function(source, args)
+command('experience', function(source, args)
     if not requireAdmin(source) then return end
 
     local target, amount = tonumber(args[1]), tonumber(args[2])
-    if not target or not amount then return report(source, ('Usage: /%s:fdxp <playerId> <amount>'):format(prefix)) end
+    if not target or not amount then return report(source, ('Usage: /%s <playerId> <amount>'):format(Shared.Command('experience'))) end
 
     local identifier = Bridge.GetIdentifier(target)
     if not identifier then return report(source, 'That player is not connected.') end

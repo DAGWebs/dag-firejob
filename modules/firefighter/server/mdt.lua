@@ -131,8 +131,11 @@ function Mdt.FileReport(source, callId, narrative)
         State.SaveProfile(profile)
     end
     if (tonumber(bonus.pay) or 0) > 0 then
-        Bridge.AddMoney(source, (Shared.Settings().pay or {}).account or 'bank',
-            math.floor(bonus.pay), 'firefighter:report')
+        local funded = Billing.Fund(math.floor(bonus.pay), 'report bonus')
+        if funded > 0 then
+            Bridge.AddMoney(source, (Shared.Settings().pay or {}).account or 'bank',
+                funded, 'firefighter:report')
+        end
     end
 
     return true, nil, report
@@ -476,7 +479,18 @@ end)
 CreateThread(function()
     Bridge.AwaitReady(10000)
     if settings().enabled == false then return end
-    Bridge.Print('firefighter terminal ready: billing provider %s, society %s',
-        (Billing.Provider() or {}).id or 'internal',
-        (Billing.SocietyProvider() or {}).resource or 'internal')
+    -- Which of these is in play decides whether the split and the department
+    -- account mean anything, so it is said out loud rather than assumed.
+    Bridge.Print('billing: settled by %s, delivered through %s, society %s, wages from %s',
+        Billing.Settlement(),
+        (Billing.Provider() or {}).id or 'the terminal',
+        (Billing.SocietyProvider() or {}).resource or 'the internal ledger',
+        Billing.Funding())
+
+    local split = Shared.Settings().billing.split or {}
+    if Billing.Settlement() == 'framework'
+        and ((tonumber(split.author) or 0) > 0 or (tonumber(split.crew) or 0) > 0) then
+        Bridge.Print('WARNING: billing.split is set but the framework is collecting, so it decides '
+            .. 'where the money goes. Set billing.settlement = "department" for the split to apply.')
+    end
 end)

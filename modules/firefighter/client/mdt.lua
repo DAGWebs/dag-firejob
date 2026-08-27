@@ -441,13 +441,11 @@ function Mdt.Open(target)
     end)
 end
 
-RegisterCommand((settings().command or 'mdt'), function()
-    if not Shared.Enabled() or settings().enabled == false then return end
-    Mdt.Open()
-end, false)
-
-if settings().key then
-    RegisterKeyMapping(settings().command or 'mdt', 'Fire department terminal', 'keyboard', settings().key)
+if Fire.Duty then
+    Fire.Duty.BindCommand('mdt', 'Fire department terminal', function()
+        if not Shared.Enabled() or settings().enabled == false then return end
+        Mdt.Open()
+    end)
 end
 
 -- The watch office is a terminal, and so is the seat of any apparatus.

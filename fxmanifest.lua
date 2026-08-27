@@ -55,6 +55,7 @@ server_scripts {
     'modules/firefighter/server/state.lua',
     'modules/firefighter/server/incident.lua',
     'modules/firefighter/server/progression.lua',
+    'modules/firefighter/server/jobs.lua',
     'modules/firefighter/server/departments.lua',
     'modules/firefighter/server/billing.lua',
     'modules/firefighter/server/dispatch.lua',
