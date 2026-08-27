@@ -346,6 +346,7 @@ local function publicVictim(victim)
         coords = Shared.Coords(victim.coords),
         state = victim.state,
         condition = Shared.Round(victim.condition, 0),
+        triage = Fire.Incident and Fire.Incident.Triage(victim) or nil,
         heading = victim.heading,
         model = victim.model,
         wreck = victim.wreck,

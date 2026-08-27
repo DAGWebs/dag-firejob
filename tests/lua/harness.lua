@@ -78,6 +78,7 @@ function harness.reset()
     harness.pedVehicle = 0
     harness.pedDown = false
     harness.ragdolled = false
+    harness.camShake = nil
     harness.vehicleSpeed = 0.0
     harness.vehicleCollided = false
     harness.entityOnFire = {}
@@ -541,6 +542,7 @@ function _G.GetVehicleEngineHealth() return harness.engineHealth or 1000.0 end
 function _G.IsPedDeadOrDying() return harness.pedDown == true end
 function _G.DisableControlAction() end
 function _G.SetPedToRagdoll() harness.ragdolled = true end
+function _G.ShakeGameplayCam(name, amount) harness.camShake = { name = name, amount = amount } end
 
 local function damage(field)
     return function(vehicle, index)

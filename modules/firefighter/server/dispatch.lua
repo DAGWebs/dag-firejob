@@ -398,6 +398,8 @@ function Dispatch.Tick()
         -- A PAR check that has run its window is answered or it is not.
         if Fire.Crew then Fire.Crew.ResolvePar(call) end
 
+        Dispatch.Hazards(call, now)
+
         local changed = select(1, Incident.Tick(call))
         for _, node in ipairs(changed) do State.SyncNode(call, node) end
         for _, victim in ipairs(Incident.TickVictims(call)) do State.SyncVictim(call, victim) end
@@ -416,6 +418,60 @@ function Dispatch.Tick()
             State.SyncCall(call)
         end
     end
+end
+
+-- Reading the fire ---------------------------------------------------------
+
+-- Both of these are warned about first and both are survivable: the warning is
+-- the mechanic, and the damage is what happens to whoever ignored it.
+local function hurtNearby(call, radius, damage, reason)
+    local hurt = {}
+    for identifier, responder in pairs(call.responders or {}) do
+        local coords = State.PlayerCoords(responder.source)
+        if coords and Shared.Distance(coords, call.coords) <= radius then
+            hurt[#hurt + 1] = { identifier = identifier, source = responder.source, name = responder.name }
+        end
+    end
+
+    for _, entry in ipairs(hurt) do
+        local ped = GetPlayerPed(entry.source)
+        if ped and ped ~= 0 then
+            SetEntityHealth(ped, math.max(1, GetEntityHealth(ped) - damage))
+        end
+        Bridge.Notify(entry.source, reason, 'error', 8000)
+        if Fire.Mayday then Fire.Mayday.Check(entry.source) end
+    end
+    return hurt
+end
+
+Dispatch.HurtNearby = hurtNearby
+
+function Dispatch.Hazards(call, now)
+    local flash = Incident.TickFlashover(call)
+    if flash == 'warning' then
+        State.BroadcastCall(call, 'fire:hazardWarning', call.id, 'flashover')
+        radio(('%s - conditions deteriorating, watch for flashover'):format(call.id), 'error', call)
+    elseif flash == 'flashover' then
+        local config = (Shared.Settings().hazardEvents or {}).flashover or {}
+        State.BroadcastCall(call, 'fire:hazard', call.id, 'flashover', call.coords)
+        local hurt = hurtNearby(call, tonumber(config.radius) or 9.0,
+            tonumber(config.damage) or 120, 'Flashover. Get out.')
+        radio(('%s - FLASHOVER, %d caught in it'):format(call.id, #hurt), 'error', call)
+    end
+
+    local collapse = Incident.TickCollapse(call, now)
+    if collapse == 'warning' then
+        State.BroadcastCall(call, 'fire:hazardWarning', call.id, 'collapse')
+        radio(('%s - the building is going, everybody out'):format(call.id), 'error', call)
+    elseif collapse == 'collapse' then
+        local config = (Shared.Settings().hazardEvents or {}).collapse or {}
+        State.BroadcastCall(call, 'fire:hazard', call.id, 'collapse', call.coords)
+        local hurt = hurtNearby(call, tonumber(config.radius) or 12.0,
+            tonumber(config.damage) or 150, 'The building came down.')
+        radio(('%s - STRUCTURAL COLLAPSE, %d caught in it'):format(call.id, #hurt), 'error', call)
+    end
+
+    return flash, collapse
 end
 
 -- Threads ------------------------------------------------------------------

@@ -119,6 +119,12 @@ function Hud.Draw()
         row = row + 0.022
     end
 
+    local hazard = Fire.Effects and Fire.Effects.Warning()
+    if hazard then
+        text(('~r~%s'):format(hazard.text), x, row, 0.34)
+        row = row + 0.024
+    end
+
     if Fire.Mayday and Fire.Mayday.IsDown() then
         local left = Fire.Mayday.Remaining(GetPlayerServerId(PlayerId()))
         text(('~r~MAYDAY  %ds'):format(math.ceil((left or 0) / 1000)), x, row, 0.34)

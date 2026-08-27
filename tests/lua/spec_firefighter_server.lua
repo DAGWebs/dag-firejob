@@ -1403,3 +1403,167 @@ test('somebody who clocks off stops being down', function()
     DAG.Fire.Mayday.Tick()
     assertNil(DAG.Fire.Mayday.Of(1))
 end)
+
+-- Reading the fire --------------------------------------------------------------
+
+-- The warning is the mechanic. Knocking the fire down bleeds the risk back off,
+-- which is the answer to it.
+test('heat builds towards a flashover and knocking it down bleeds it off', function()
+    loadServer()
+    onDuty(1)
+    local call = DAG.Fire.Dispatch.Create('structure', { department = 'lsfd', force = true })
+    for _, node in pairs(call.fires) do node.intensity = 90 end
+
+    assertNil(DAG.Fire.Incident.TickFlashover(call))
+    assertTrue(call.flashover > 0)
+
+    -- It warns before it happens, once.
+    for _ = 1, 20 do
+        if DAG.Fire.Incident.TickFlashover(call) == 'warning' then break end
+    end
+    assertTrue(call.flashoverWarned)
+
+    for _, node in pairs(call.fires) do node.intensity = 10 end
+    local before = call.flashover
+    DAG.Fire.Incident.TickFlashover(call)
+    assertTrue(call.flashover < before, 'water takes it back down')
+end)
+
+test('a fire left alone eventually flashes over', function()
+    loadServer()
+    onDuty(1)
+    local call = DAG.Fire.Dispatch.Create('structure', { department = 'lsfd', force = true })
+    for _, node in pairs(call.fires) do node.intensity = 100 end
+
+    local event
+    for _ = 1, 40 do
+        event = DAG.Fire.Incident.TickFlashover(call)
+        if event == 'flashover' then break end
+    end
+    assertEq(event, 'flashover')
+end)
+
+test('a vehicle fire never flashes over', function()
+    loadServer()
+    onDuty(1)
+    local call = DAG.Fire.Dispatch.Create('vehicle', { department = 'lsfd', force = true })
+    for _, node in pairs(call.fires) do node.intensity = 100 end
+
+    for _ = 1, 40 do assertNil(DAG.Fire.Incident.TickFlashover(call)) end
+end)
+
+test('a structure burning unchecked warns and then comes down', function()
+    loadServer()
+    onDuty(1)
+    local call = DAG.Fire.Dispatch.Create('structure', { department = 'lsfd', force = true })
+
+    assertNil(DAG.Fire.Incident.TickCollapse(call, harness.gameTimer), 'not yet')
+
+    harness.gameTimer = harness.gameTimer + 500000
+    assertEq(DAG.Fire.Incident.TickCollapse(call, harness.gameTimer), 'warning')
+
+    harness.gameTimer = harness.gameTimer + 20000
+    assertEq(DAG.Fire.Incident.TickCollapse(call, harness.gameTimer), 'collapse')
+    assertNil(DAG.Fire.Incident.TickCollapse(call, harness.gameTimer), 'and only once')
+end)
+
+test('a fire that was put out does not bring the building down', function()
+    loadServer()
+    onDuty(1)
+    local call = DAG.Fire.Dispatch.Create('structure', { department = 'lsfd', force = true })
+    call.fires = {}
+
+    harness.gameTimer = harness.gameTimer + 500000
+    assertNil(DAG.Fire.Incident.TickCollapse(call, harness.gameTimer))
+end)
+
+test('whoever ignored the warning is the one who gets hurt', function()
+    loadServer()
+    onDuty(1)
+    onDuty(2)
+    local call = DAG.Fire.Dispatch.Create('structure', { department = 'lsfd', force = true })
+    DAG.Fire.Dispatch.Join(1, call.id)
+    DAG.Fire.Dispatch.Join(2, call.id)
+
+    harness.placePlayer(1, vector3(call.coords.x, call.coords.y, call.coords.z))
+    harness.placePlayer(2, vector3(call.coords.x + 200, call.coords.y, call.coords.z))
+    harness.entityHealth[harness.playerPeds[1]] = 200
+    harness.entityHealth[harness.playerPeds[2]] = 200
+
+    local hurt = DAG.Fire.Dispatch.HurtNearby(call, 9.0, 120, 'Flashover.')
+    assertEq(#hurt, 1, 'the one who stayed in it')
+    assertEq(hurt[1].identifier, 'license:1')
+    assertEq(harness.entityHealth[harness.playerPeds[2]], 200, 'the one who got out is fine')
+end)
+
+-- Triage ---------------------------------------------------------------------------
+
+test('patients are sorted by how bad they are', function()
+    loadServer()
+    local Incident = DAG.Fire.Incident
+
+    assertEq(Incident.Triage({ condition = 20, state = 'freed' }), 'immediate')
+    assertEq(Incident.Triage({ condition = 50, state = 'freed' }), 'delayed')
+    assertEq(Incident.Triage({ condition = 90, state = 'freed' }), 'minor')
+    assertEq(Incident.Triage({ condition = 0, state = 'deceased' }), 'expectant')
+end)
+
+-- Treating the walking wounded while somebody bleeds out is the mistake triage
+-- exists to stop, so it is the thing that is not paid for.
+test('the bonus is for working the worst patient first', function()
+    loadServer()
+    onDuty(1)
+    DAG.Fire.Progression.GrantCertification('license:1', 'ems')
+    equip(1, 'medbag')
+
+    local call = DAG.Fire.Dispatch.Create('medical', { department = 'lsfd', force = true })
+    DAG.Fire.Dispatch.Join(1, call.id)
+
+    -- Two patients, one much worse than the other.
+    local worstId, bestId
+    for id, victim in pairs(call.victims) do
+        if not worstId then worstId, victim.condition = id, 20
+        else bestId, victim.condition = id, 90 end
+    end
+    if not bestId then
+        bestId = 'v2'
+        call.victims[bestId] = {
+            id = bestId, coords = call.coords, state = 'freed', condition = 90, heading = 0
+        }
+    end
+
+    local function treat(victimId)
+        harness.placePlayer(1, vector3(call.victims[victimId].coords.x,
+            call.victims[victimId].coords.y, call.victims[victimId].coords.z))
+        DAG.Fire.Incident.BeginAction(1, call.id, 'treat', victimId)
+        harness.gameTimer = harness.gameTimer + 20000
+        return select(3, DAG.Fire.Incident.CompleteAction(1))
+    end
+
+    local wrong = treat(bestId)
+    assertFalse(wrong.triage, 'somebody was worse than them')
+
+    local right = treat(worstId)
+    assertTrue(right.triage, 'and now they are the worst one waiting')
+    assertEq(call.triaged, 1, 'only the correct one counted')
+end)
+
+test('a lone patient is always the right one to treat', function()
+    loadServer()
+    onDuty(1)
+    DAG.Fire.Progression.GrantCertification('license:1', 'ems')
+    equip(1, 'medbag')
+
+    local call = DAG.Fire.Dispatch.Create('medical', { department = 'lsfd', force = true })
+    local keep
+    for id in pairs(call.victims) do
+        if keep then call.victims[id] = nil else keep = id end
+    end
+
+    harness.placePlayer(1, vector3(call.victims[keep].coords.x,
+        call.victims[keep].coords.y, call.victims[keep].coords.z))
+    DAG.Fire.Incident.BeginAction(1, call.id, 'treat', keep)
+    harness.gameTimer = harness.gameTimer + 20000
+
+    assertTrue(select(3, DAG.Fire.Incident.CompleteAction(1)).triage)
+end)

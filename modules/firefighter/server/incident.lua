@@ -265,6 +265,122 @@ function Incident.TickVictims(call)
     return changed
 end
 
+-- Reading the fire ---------------------------------------------------------
+--
+-- Both of these warn before they happen and both are avoidable. That is the
+-- whole design: a firefighter who is paying attention gets out, and one who is
+-- not finds out why the warning was there.
+
+local function hazardSettings(kind)
+    return (Shared.Settings().hazardEvents or {})[kind] or {}
+end
+
+local function averageIntensity(call)
+    local total, count = 0, 0
+    for _, node in pairs(call.fires or {}) do
+        if node.intensity > 0 then
+            total = total + node.intensity
+            count = count + 1
+        end
+    end
+    if count == 0 then return 0 end
+    return total / count
+end
+
+Incident.AverageIntensity = averageIntensity
+
+-- Heat builds in a closed room until it lets go all at once. Knocking the fire
+-- down bleeds it back off, which is the answer to it.
+function Incident.TickFlashover(call)
+    local config = hazardSettings('flashover')
+    if config.enabled == false or not (config.kinds or {})[call.kind] then return nil end
+
+    local average = averageIntensity(call)
+    local risk = call.flashover or 0
+
+    if average >= (tonumber(config.threshold) or 75) then
+        risk = risk + (tonumber(config.buildPerTick) or 4)
+    else
+        risk = math.max(0, risk - 6)
+    end
+
+    call.flashover = math.min(100, risk)
+
+    if call.flashover >= 100 then
+        call.flashover = 0
+        call.flashoverAt = GetGameTimer()
+        return 'flashover'
+    end
+
+    -- One warning per build-up, so it reads as a warning rather than as noise.
+    if call.flashover >= (tonumber(config.warnAt) or 60) and not call.flashoverWarned then
+        call.flashoverWarned = true
+        return 'warning'
+    end
+    if call.flashover < (tonumber(config.warnAt) or 60) then call.flashoverWarned = false end
+
+    return nil
+end
+
+-- A structure left burning long enough comes down. The warning is generous
+-- because the answer is to leave, and leaving takes time.
+function Incident.TickCollapse(call, now)
+    local config = hazardSettings('collapse')
+    if config.enabled == false or not (config.kinds or {})[call.kind] then return nil end
+    if call.collapsed then return nil end
+
+    local burning = false
+    for _, node in pairs(call.fires or {}) do
+        if node.intensity > 0 then burning = true break end
+    end
+    if not burning then return nil end
+
+    local age = now - call.createdAt
+    local after = tonumber(config.after) or 420000
+
+    if age < after then return nil end
+    if not call.collapseWarnedAt then
+        call.collapseWarnedAt = now
+        return 'warning'
+    end
+
+    if now - call.collapseWarnedAt >= (tonumber(config.warning) or 15000) then
+        call.collapsed = true
+        return 'collapse'
+    end
+    return nil
+end
+
+-- Triage -------------------------------------------------------------------
+
+-- Red, yellow, green. What it is for is the order: working the worst patient
+-- first is what the bonus pays for.
+function Incident.Triage(victim)
+    local config = Shared.Settings().triage or {}
+    if config.enabled == false or not victim then return nil end
+
+    if victim.state == Fire.VictimState.deceased then return 'expectant' end
+    local condition = tonumber(victim.condition) or 100
+    if condition <= (tonumber(config.immediate) or 35) then return 'immediate' end
+    if condition <= (tonumber(config.delayed) or 65) then return 'delayed' end
+    return 'minor'
+end
+
+-- Whether this was the patient that should have been worked next. A crew that
+-- treats the walking wounded while somebody bleeds out is not paid for it.
+function Incident.WorstWaiting(call)
+    local worst, worstCondition
+    for _, victim in pairs(call.victims or {}) do
+        local waiting = victim.state == Fire.VictimState.trapped or victim.state == Fire.VictimState.freed
+        if waiting and victim.condition > 0 then
+            if not worstCondition or victim.condition < worstCondition then
+                worst, worstCondition = victim, victim.condition
+            end
+        end
+    end
+    return worst
+end
+
 -- Completion ---------------------------------------------------------------
 
 function Incident.FiresOut(call)
@@ -643,7 +759,7 @@ function Incident.CompleteAction(source)
     local reach = tonumber((Shared.Settings().dispatch or {}).actionDistance) or 12.0
     if not coords or Shared.Distance(coords, target.coords) > reach then return false, 'left_scene' end
 
-    local stageLabel, remaining = nil, nil
+    local stageLabel, remaining, correctTriage = nil, nil, nil
     if pending.kind == 'free' then
         local stage, total = Incident.StageFor(target)
         if stage then
@@ -661,9 +777,15 @@ function Incident.CompleteAction(source)
             target.state = Fire.VictimState.freed
         end
     elseif pending.kind == 'treat' then
+        -- Whether this was the right patient is decided before treating them
+        -- changes who the worst one is.
+        local worst = Incident.WorstWaiting(call)
+        correctTriage = worst == nil or worst.id == target.id
+
         target.state = Fire.VictimState.treated
         target.condition = math.max(target.condition, 55)
         call.rescued = (call.rescued or 0) + 1
+        if correctTriage then call.triaged = (call.triaged or 0) + 1 end
     elseif pending.kind == 'contain' then
         target.contained = true
         target.progress = 100
@@ -678,7 +800,8 @@ function Incident.CompleteAction(source)
         stage = stageLabel,
         remaining = remaining,
         saved = Shared.Round(saved, 2),
-        hands = pending.hands or 0
+        hands = pending.hands or 0,
+        triage = correctTriage
     }
 end
 

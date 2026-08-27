@@ -146,6 +146,18 @@ local function beginAction(callId, kind, targetId)
     TriggerServerEvent(Bridge.Event('fire:beginAction'), callId, kind, targetId)
 end
 
+local TRIAGE = {
+    immediate = '~r~IMMEDIATE~s~',
+    delayed = '~y~DELAYED~s~',
+    minor = '~g~MINOR~s~',
+    expectant = '~c~EXPECTANT~s~'
+}
+
+local function triageTag(victim)
+    local tag = victim.triage and TRIAGE[victim.triage]
+    return tag and (tag .. ' ') or ''
+end
+
 local function victimInteraction(call, victim)
     local id = ('%s:victim:%s'):format(Bridge.namespace, key(call.id, victim.id))
 
@@ -156,8 +168,8 @@ local function victimInteraction(call, victim)
         local stage = victim.stage and stages[victim.stage]
         return registerInteraction(id, {
             coords = victim.coords,
-            label = stage and ('Press ~INPUT_CONTEXT~ to %s'):format(stage.label:lower())
-                or 'Press ~INPUT_CONTEXT~ to extricate the patient',
+            label = ('%sPress ~INPUT_CONTEXT~ to %s'):format(triageTag(victim),
+                stage and stage.label:lower() or 'extricate the patient'),
             distance = 2.5,
             onSelect = function() beginAction(call.id, 'free', victim.id) end
         })
@@ -166,7 +178,7 @@ local function victimInteraction(call, victim)
     if victim.state == Fire.VictimState.freed then
         return registerInteraction(id, {
             coords = victim.coords,
-            label = 'Press ~INPUT_CONTEXT~ to treat the patient',
+            label = ('%sPress ~INPUT_CONTEXT~ to treat the patient'):format(triageTag(victim)),
             distance = 2.5,
             onSelect = function() beginAction(call.id, 'treat', victim.id) end
         })

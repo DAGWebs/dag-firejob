@@ -314,6 +314,31 @@ on('fire:completeAction', function(source)
         else
             Bridge.Notify(source, result.kind == 'free' and 'Patient extricated.' or 'Patient treated.', 'success')
         end
+
+        -- Working the worst patient first is the whole point of triage, so it
+        -- is the thing that pays.
+        if result.triage ~= nil then
+            local triage = Shared.Settings().triage or {}
+            if result.triage then
+                local pay = math.floor(tonumber(triage.orderBonus) or 0)
+                if pay > 0 then
+                    local funded = Fire.Billing.Fund(pay, 'triage')
+                    if funded > 0 then
+                        Bridge.AddMoney(source, (Shared.Settings().pay or {}).account or 'bank',
+                            funded, 'firefighter:triage')
+                    end
+                end
+
+                local profile = State.Profile(source)
+                if profile then
+                    profile.xp = profile.xp + math.floor(tonumber(triage.orderXp) or 0)
+                    State.SaveProfile(profile)
+                end
+                Bridge.Notify(source, 'Correct triage priority.', 'success', 4000)
+            else
+                Bridge.Notify(source, 'There was somebody worse than them.', 'inform', 5000)
+            end
+        end
     end
     State.SyncCall(result.call)
 end)

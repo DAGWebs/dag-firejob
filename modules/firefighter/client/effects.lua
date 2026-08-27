@@ -340,6 +340,49 @@ function Effects.Clear()
     setTimecycle(nil)
 end
 
+-- Reading the fire -------------------------------------------------------------------
+
+local warning = nil
+
+function Effects.Warning()
+    if not warning then return nil end
+    if GetGameTimer() >= warning.until_ then
+        warning = nil
+        return nil
+    end
+    return warning
+end
+
+local WARNINGS = {
+    flashover = 'CONDITIONS DETERIORATING - WATCH FOR FLASHOVER',
+    collapse = 'THE BUILDING IS GOING - EVERYBODY OUT'
+}
+
+RegisterNetEvent(Bridge.Event('fire:hazardWarning'), function(_, kind)
+    warning = { kind = kind, text = WARNINGS[kind] or 'GET OUT', until_ = GetGameTimer() + 12000 }
+    Bridge.Notify(warning.text, 'error', 10000)
+    play((settings().sound or {}).mayday)
+end)
+
+RegisterNetEvent(Bridge.Event('fire:hazard'), function(_, kind, coords)
+    warning = nil
+    local at = Shared.Coords(coords)
+    if not at then return end
+
+    -- The event itself: a lot of fire, all at once, where the warning was.
+    local water = settings().water or {}
+    for step = 1, 6 do
+        burst(water.asset, (settings().smoke or {}).effect, {
+            x = at.x + math.cos(step) * 3.0,
+            y = at.y + math.sin(step) * 3.0,
+            z = at.z + (kind == 'collapse' and 0.5 or 1.5)
+        }, 4.0)
+    end
+
+    play((settings().sound or {}).mayday)
+    ShakeGameplayCam('SMALL_EXPLOSION_SHAKE', kind == 'collapse' and 1.2 or 0.8)
+end)
+
 -- Wiring ---------------------------------------------------------------------------
 
 -- A call that closes leaves its mark, and a fire that was actually fought

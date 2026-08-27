@@ -61,7 +61,7 @@ read_globals = {
     'ClearTimecycleModifier', 'SetTimecycleModifier', 'SetTimecycleModifierStrength',
     'PlaySoundFrontend', 'PlaySoundFromCoord', 'GetPedBoneCoords',
     'StartParticleFxLoopedAtCoord', 'StopParticleFxLooped',
-    'DisableControlAction', 'SetPedToRagdoll',
+    'DisableControlAction', 'SetPedToRagdoll', 'ShakeGameplayCam',
 }
 
 exclude_files = { 'tests/lua/vendor/**' }
