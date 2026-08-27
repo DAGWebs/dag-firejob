@@ -12,7 +12,7 @@ local Client = Fire.Client
 local Rescue = {}
 Fire.Rescue = Rescue
 
-local peds, interactions = {}, {}
+local peds, wrecks, interactions = {}, {}, {}
 local carrying, action = nil, nil
 
 local CARRY_DICT = 'missfinale_c2mcs_1'
@@ -43,11 +43,54 @@ local function removePed(entryKey)
     peds[entryKey] = nil
 end
 
+-- Wrecks are local scenery, like the patients in them: every responder builds
+-- their own copy from the same server record rather than fighting over one
+-- networked entity.
+local function spawnWreck(callId, wreck)
+    local entryKey = key(callId, wreck.id)
+    if wrecks[entryKey] then return wrecks[entryKey] end
+
+    local model = GetHashKey(wreck.model or 'sultan')
+    if not HasModelLoaded(model) then
+        RequestModel(model)
+        return nil
+    end
+
+    local coords = wreck.coords
+    local vehicle = CreateVehicle(model, coords.x, coords.y, coords.z, wreck.heading or 0.0, false, false)
+    if not vehicle or vehicle == 0 then return nil end
+
+    SetVehicleOnGroundProperly(vehicle)
+    FreezeEntityPosition(vehicle, true)
+    SetVehicleEngineHealth(vehicle, 0.0)
+    SetVehicleBodyHealth(vehicle, 150.0)
+    SetVehicleDeformationFixed(vehicle)
+    for window = 0, 3 do SmashVehicleWindow(vehicle, window) end
+
+    wrecks[entryKey] = vehicle
+    return vehicle
+end
+
+-- The visible result of each extrication stage. Cutting a door off is worth
+-- seeing, and it is how a crew knows where the work got to.
+local function markStage(callId, victim)
+    local vehicle = victim.wreck and wrecks[key(callId, victim.wreck)]
+    if not vehicle or not DoesEntityExist(vehicle) then return false end
+
+    local stage = tonumber(victim.stage) or 99
+    if stage > 3 then SetVehicleDoorBroken(vehicle, 0, true) end
+    if stage > 4 then
+        SetVehicleDoorBroken(vehicle, 1, true)
+        SetVehicleDoorBroken(vehicle, 4, true)
+    end
+    return true
+end
+
 local function spawnVictim(callId, victim)
     local entryKey = key(callId, victim.id)
     if peds[entryKey] then return peds[entryKey] end
 
-    local model = GetHashKey(victimSettings().model or 'a_m_y_business_01')
+    local model = GetHashKey(victim.model or 'a_m_y_business_01')
     if not HasModelLoaded(model) then
         RequestModel(model)
         return nil
@@ -90,9 +133,14 @@ local function victimInteraction(call, victim)
     local id = ('%s:victim:%s'):format(Bridge.namespace, key(call.id, victim.id))
 
     if victim.state == Fire.VictimState.trapped then
+        -- A staged extrication names the step the crew is on, so the prompt is
+        -- "force the door", not "extricate" five times over.
+        local stages = (Shared.Settings().extrication or {}).stages or {}
+        local stage = victim.stage and stages[victim.stage]
         return registerInteraction(id, {
             coords = victim.coords,
-            label = 'Press ~INPUT_CONTEXT~ to extricate the patient',
+            label = stage and ('Press ~INPUT_CONTEXT~ to %s'):format(stage.label:lower())
+                or 'Press ~INPUT_CONTEXT~ to extricate the patient',
             distance = 2.5,
             onSelect = function() beginAction(call.id, 'free', victim.id) end
         })
@@ -136,9 +184,14 @@ end
 -- Rebuilds the local scene for every call this client can see. Called from the
 -- sync handler rather than on a timer, so it only runs when something changed.
 function Rescue.Refresh()
-    local wanted = {}
+    local wanted, wantedWrecks = {}, {}
 
     for callId, call in pairs(Client.Calls()) do
+        for _, wreck in pairs(call.wrecks or {}) do
+            wantedWrecks[key(callId, wreck.id)] = true
+            spawnWreck(callId, wreck)
+        end
+
         for _, victim in pairs(call.victims or {}) do
             local entryKey = key(callId, victim.id)
             local visible = victim.state ~= Fire.VictimState.transported
@@ -147,6 +200,7 @@ function Rescue.Refresh()
                 spawnVictim(callId, victim)
             end
             victimInteraction(call, victim)
+            markStage(callId, victim)
         end
 
         for _, hazard in pairs(call.hazards or {}) do
@@ -157,10 +211,20 @@ function Rescue.Refresh()
     for entryKey in pairs(peds) do
         if not wanted[entryKey] and carrying ~= entryKey then removePed(entryKey) end
     end
+    for entryKey, vehicle in pairs(wrecks) do
+        if not wantedWrecks[entryKey] then
+            if DoesEntityExist(vehicle) then DeleteEntity(vehicle) end
+            wrecks[entryKey] = nil
+        end
+    end
 end
 
 function Rescue.Clear()
     for entryKey in pairs(peds) do removePed(entryKey) end
+    for entryKey, vehicle in pairs(wrecks) do
+        if DoesEntityExist(vehicle) then DeleteEntity(vehicle) end
+        wrecks[entryKey] = nil
+    end
     for id in pairs(interactions) do clearInteraction(id) end
     carrying = nil
 end
@@ -222,10 +286,11 @@ end
 -- The server has accepted the start and told us how long it takes. The client
 -- runs the clock only to draw the bar; the completion is checked again server
 -- side before it counts.
-RegisterNetEvent(Bridge.Event('fire:actionStarted'), function(kind, targetId, duration)
+RegisterNetEvent(Bridge.Event('fire:actionStarted'), function(kind, targetId, duration, label)
     action = {
         kind = kind,
         targetId = targetId,
+        label = label,
         duration = duration,
         startedAt = GetGameTimer(),
         origin = Shared.Coords(GetEntityCoords(PlayerPedId()))
@@ -260,7 +325,8 @@ end
 
 function Rescue.ActionProgress()
     if not action then return nil end
-    return Shared.Clamp((GetGameTimer() - action.startedAt) / action.duration, 0, 1), action.kind
+    return Shared.Clamp((GetGameTimer() - action.startedAt) / action.duration, 0, 1),
+        action.label or action.kind
 end
 
 -- Threads -------------------------------------------------------------------

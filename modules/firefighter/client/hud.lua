@@ -67,7 +67,8 @@ function Hud.Draw()
     local call = Client.Assigned()
     local row = y
 
-    text('~b~LSFD', x, row, 0.36)
+    local department = Shared.Department(Client.Department())
+    text(('~b~%s'):format(department and department.short or 'FD'), x, row, 0.36)
     row = row + 0.026
 
     local air = Client.Air() / math.max(1, tonumber(scba.capacity) or 1500)
@@ -89,8 +90,24 @@ function Hud.Draw()
 
     local agent = Fire.Suppression and Fire.Suppression.Agent()
     if agent then
-        text(('~y~%s in hand'):format(agent), x, row, 0.28)
+        local line = ''
+        if Fire.Hose and Fire.Hose.Deployed() then
+            local stretch = Fire.Hose.Stretch()
+            line = stretch >= 1.0 and '  ~r~LINE STRETCHED' or ('  line %d%%'):format(math.floor(stretch * 100))
+        end
+        text(('~y~%s in hand%s'):format(agent, line), x, row, 0.28)
         row = row + 0.022
+    end
+
+    local course = Fire.Academy and Fire.Academy.Course()
+    if course then
+        local progress = Fire.Academy.Progress()
+        text(('~g~Academy: %s (%s)'):format(course.label or course.id, course.phase), x, row, 0.28)
+        row = row + 0.02
+        if progress then
+            bar(x + 0.055, row + 0.004, 0.09, progress, 120, 200, 120)
+            row = row + 0.018
+        end
     end
 
     if call then

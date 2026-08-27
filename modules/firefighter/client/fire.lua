@@ -92,8 +92,15 @@ function Suppression.Agent()
 end
 
 function Suppression.Equip(agent)
-    if not Shared.Agent(agent) then return false end
+    local definition = Shared.Agent(agent)
+    if not definition then return false end
     activeAgent = agent
+
+    -- A hose is not a thing you hold, it is a line you pull off a pump. The
+    -- server decides whether there is one to pull.
+    if definition.needsLine and Fire.Hose and not Fire.Hose.Deployed() then
+        Fire.Hose.Deploy()
+    end
 
     local player = ped()
     GiveWeaponToPed(player, GetHashKey(EXTINGUISHER), 4000, false, true)
@@ -102,7 +109,12 @@ function Suppression.Equip(agent)
 end
 
 function Suppression.Stow()
+    local definition = activeAgent and Shared.Agent(activeAgent)
     activeAgent = nil
+
+    if definition and definition.needsLine and Fire.Hose and Fire.Hose.Deployed() then
+        Fire.Hose.Stow()
+    end
     RemoveWeaponFromPed(ped(), GetHashKey(EXTINGUISHER))
     return true
 end
@@ -110,6 +122,20 @@ end
 function Suppression.Toggle(agent)
     if activeAgent == agent then return Suppression.Stow() end
     return Suppression.Equip(agent)
+end
+
+-- Thermal imaging. Cheap to implement, and the only way to find a patient in a
+-- room full of smoke.
+local thermal = false
+
+function Suppression.Thermal()
+    return thermal
+end
+
+function Suppression.ToggleThermal()
+    thermal = not thermal
+    SetSeethrough(thermal)
+    return thermal
 end
 
 -- Aiming -------------------------------------------------------------------
@@ -149,6 +175,11 @@ end
 -- can see what happened.
 function Suppression.SprayStep()
     if not activeAgent or not Client.OnDuty() then return nil end
+
+    -- Nothing to report when the line has not been charged yet; the server
+    -- would refuse it anyway.
+    local definition = Shared.Agent(activeAgent)
+    if definition and definition.needsLine and not Client.HasLine() then return nil end
 
     local player = ped()
     if not IsPedShooting(player) then return nil end
@@ -292,6 +323,7 @@ AddEventHandler(Bridge.Event('fire:clientUpdated'), function(reason)
     if reason ~= 'duty' or Client.OnDuty() then return end
     Suppression.ClearRendered()
     Suppression.Stow()
+    if thermal then Suppression.ToggleThermal() end
 end)
 
 AddEventHandler('onResourceStop', function(resource)

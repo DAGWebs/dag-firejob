@@ -44,6 +44,7 @@ function harness.reset()
     harness.entityModels = {}
     harness.entityHealth = {}
     harness.playerPeds = {}
+    harness.players = nil
     harness.netIds = {}
     harness.nextEntity = 100
     harness.nextBlip = 1
@@ -63,6 +64,18 @@ function harness.reset()
     harness.modelsLoaded = true
     harness.animDictsLoaded = true
     harness.ptfxLoaded = true
+    -- Ped appearance, vehicle state, and the world signals the firefighter
+    -- job's incident detectors read.
+    harness.pedOutfit = { components = {}, props = {} }
+    harness.pedGender = 'male'
+    harness.pedVehicle = 0
+    harness.pedDown = false
+    harness.vehicleSpeed = 0.0
+    harness.vehicleCollided = false
+    harness.entityOnFire = {}
+    harness.engineHealth = 1000.0
+    harness.vehicleDamage = {}
+    harness.seethrough = false
     _G.LocalPlayer = { state = {} }
 
     _G.DAG = nil
@@ -339,6 +352,19 @@ function harness.registerNetworkedEntity(netId, entity)
 end
 
 function _G.GetPlayerPed(playerSource) return harness.playerPeds[playerSource] or 0 end
+-- Server-side player list. Defaults to whoever has been placed in the world.
+function _G.GetPlayers()
+    if harness.players then
+        local list = {}
+        for index, playerSource in ipairs(harness.players) do list[index] = tostring(playerSource) end
+        return list
+    end
+
+    local list = {}
+    for playerSource in pairs(harness.playerPeds) do list[#list + 1] = tostring(playerSource) end
+    table.sort(list)
+    return list
+end
 function _G.DoesEntityExist(entity) return harness.entities[entity] == true end
 function _G.DeleteEntity(entity)
     harness.entities[entity] = nil
@@ -443,6 +469,52 @@ function _G.EndTextCommandDisplayText() end
 function _G.DrawRect(x, y, width, height)
     table.insert(harness.drawnRects, { x = x, y = y, width = width, height = height })
 end
+
+-- Ped appearance ------------------------------------------------------------
+
+function _G.IsPedMale() return harness.pedGender ~= 'female' end
+function _G.GetPedDrawableVariation(_, slot) return (harness.pedOutfit.components[slot] or { 0, 0 })[1] end
+function _G.GetPedTextureVariation(_, slot) return (harness.pedOutfit.components[slot] or { 0, 0 })[2] end
+function _G.SetPedComponentVariation(_, slot, drawable, texture)
+    harness.pedOutfit.components[slot] = { drawable, texture }
+end
+function _G.GetPedPropIndex(_, slot) return (harness.pedOutfit.props[slot] or { -1, 0 })[1] end
+function _G.GetPedPropTextureIndex(_, slot) return (harness.pedOutfit.props[slot] or { -1, 0 })[2] end
+function _G.SetPedPropIndex(_, slot, drawable, texture)
+    harness.pedOutfit.props[slot] = { drawable, texture }
+end
+function _G.ClearPedProp(_, slot) harness.pedOutfit.props[slot] = { -1, 0 } end
+function _G.SetSeethrough(value) harness.seethrough = value == true end
+
+-- Objects, vehicles, and the signals the incident detectors read -------------
+
+function _G.CreateObject(model, x, y, z)
+    return newEntity(model, vector3(x, y, z))
+end
+function _G.PlaceObjectOnGroundProperly() end
+function _G.SetEntityCollision() end
+function _G.NetworkDoesNetworkIdExist(netId) return harness.netIds[netId] ~= nil end
+
+function _G.GetVehiclePedIsIn() return harness.pedVehicle or 0 end
+function _G.GetEntitySpeed() return harness.vehicleSpeed or 0.0 end
+function _G.HasEntityCollidedWithAnything() return harness.vehicleCollided == true end
+function _G.IsEntityOnFire(entity) return harness.entityOnFire[entity] == true end
+function _G.GetVehicleEngineHealth() return harness.engineHealth or 1000.0 end
+function _G.IsPedDeadOrDying() return harness.pedDown == true end
+
+local function damage(field)
+    return function(vehicle, index)
+        harness.vehicleDamage[vehicle] = harness.vehicleDamage[vehicle] or {}
+        local record = harness.vehicleDamage[vehicle]
+        record[field] = record[field] or {}
+        table.insert(record[field], index or true)
+    end
+end
+_G.SetVehicleDoorBroken = damage('doors')
+_G.SmashVehicleWindow = damage('windows')
+function _G.SetVehicleBodyHealth() end
+function _G.SetVehicleEngineHealth() end
+function _G.SetVehicleDeformationFixed() end
 
 -- Counts entries in a harness table keyed by handle rather than by index.
 function harness.count(collection)

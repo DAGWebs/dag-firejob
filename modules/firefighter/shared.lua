@@ -1,7 +1,8 @@
 -- Shared firefighter logic: everything both sides need to agree on, and
--- nothing that touches a native. Keeping the rank table, the suppression
--- arithmetic, and the call catalogue lookups here means the client can render
--- an honest preview of a number the server is the one to actually apply.
+-- nothing that touches a native. Keeping the department lookups, the rank
+-- table, the suppression arithmetic, and the catalogue helpers here means the
+-- client can render an honest preview of a number the server is the one to
+-- actually apply.
 
 DAG = DAG or {}
 DAG.Fire = DAG.Fire or {}
@@ -70,6 +71,7 @@ end
 -- Catalogue lookups --------------------------------------------------------
 
 local function findById(list, id)
+    if id == nil then return nil end
     for _, entry in ipairs(list or {}) do
         if entry.id == id then return entry end
     end
@@ -102,9 +104,116 @@ function Shared.Certification(id)
     return findById(Shared.Settings().certifications or {}, id)
 end
 
+function Shared.Courses()
+    return (Shared.Settings().academy or {}).courses or {}
+end
+
+function Shared.Course(id)
+    return findById(Shared.Courses(), id)
+end
+
 function Shared.Agent(id)
     local agents = (Shared.Settings().fire or {}).agents or {}
     return agents[id]
+end
+
+-- The configured item name for a role ('jaws', 'hose', 'scba'...). Returns nil
+-- when the server has not named one, which reads as "no item required".
+function Shared.Item(role)
+    return (Shared.Settings().items or {})[role]
+end
+
+-- Departments --------------------------------------------------------------
+
+function Shared.Departments()
+    return Shared.Settings().departments or {}
+end
+
+function Shared.Department(id)
+    return findById(Shared.Departments(), id)
+end
+
+function Shared.StationsFor(departmentId)
+    local list = {}
+    for _, station in ipairs(Shared.Stations()) do
+        if station.department == departmentId then list[#list + 1] = station end
+    end
+    return list
+end
+
+function Shared.DepartmentForStation(stationId)
+    local station = Shared.Station(stationId)
+    return station and Shared.Department(station.department) or nil
+end
+
+-- Which department a set of coordinates belongs to. Jurisdiction circles come
+-- first; anything outside every circle falls to whichever department has the
+-- nearest station, so a call in the middle of nowhere still gets toned out.
+function Shared.DepartmentForCoords(coords)
+    local best, bestDistance
+    for _, department in ipairs(Shared.Departments()) do
+        local zone = department.jurisdiction
+        if zone and zone.center then
+            local distance = Shared.Distance(coords, zone.center)
+            if distance <= (tonumber(zone.radius) or 0) and (not bestDistance or distance < bestDistance) then
+                best, bestDistance = department, distance
+            end
+        end
+    end
+    if best then return best end
+
+    local nearest, nearestDistance
+    for _, station in ipairs(Shared.Stations()) do
+        local distance = Shared.Distance(coords, station.coords)
+        if not nearestDistance or distance < nearestDistance then
+            nearest, nearestDistance = station, distance
+        end
+    end
+    if nearest then return Shared.Department(nearest.department) end
+    return Shared.Department(Shared.Settings().fallbackDepartment)
+end
+
+function Shared.MutualAid(departmentId)
+    local department = Shared.Department(departmentId)
+    local list = {}
+    for _, id in ipairs(department and department.mutualAid or {}) do
+        local other = Shared.Department(id)
+        if other then list[#list + 1] = other end
+    end
+    return list
+end
+
+-- A DAG.Access policy for one department and one action. The framework job is
+-- the primary grant; the ACE is what makes the job work on a framework that
+-- cannot report jobs at all.
+function Shared.Policy(departmentId, action)
+    local access = Shared.Settings().access or {}
+    local rule = access[action] or {}
+    local namespace = access.aceNamespace or 'firefighter'
+
+    if action == 'admin' then
+        return { ace = rule.ace or (namespace .. '.admin') }
+    end
+
+    local department = Shared.Department(departmentId)
+    local policy = { ace = rule.ace or (namespace .. '.' .. (departmentId or 'fire') .. '.' .. action) }
+    if department and department.job then
+        policy.jobs = { [department.job] = tonumber(rule.minimumGrade) or 0 }
+    end
+    return policy
+end
+
+-- Uniforms -----------------------------------------------------------------
+
+function Shared.UniformSet(departmentId, gender, variant)
+    local uniforms = Shared.Settings().uniforms or {}
+    local department = Shared.Department(departmentId)
+    local set = (uniforms.sets or {})[department and department.uniform or departmentId]
+    if not set then return nil end
+
+    local bySex = set[gender == 'female' and 'female' or 'male']
+    if not bySex then return nil end
+    return bySex[variant or 'turnout'], bySex
 end
 
 -- Ranks and certifications -------------------------------------------------
@@ -145,13 +254,22 @@ function Shared.RankLabel(xp)
     return rank and rank.label or 'Unranked'
 end
 
+-- The framework job grade that goes with a rank, used when hiring and
+-- promoting. It has to line up with the grades in your framework's own job
+-- definition; see install/jobs/.
+function Shared.GradeFor(xp)
+    local rank = Shared.RankFor(xp)
+    return tonumber(rank and rank.grade) or 0
+end
+
 function Shared.PayMultiplier(xp)
     local rank = Shared.RankFor(xp)
     return tonumber(rank and rank.pay) or 1.0
 end
 
--- A certification is held when the rank grants it or an officer signed it off.
--- Rank grants are cumulative: reaching Captain keeps everything earned below.
+-- A certification is held when the rank grants it or it has been earned at the
+-- academy or signed off by an officer. Rank grants are cumulative: reaching
+-- Captain keeps everything earned below.
 function Shared.HeldCertifications(profile)
     local held = {}
     for _, id in ipairs((profile or {}).certifications or {}) do held[id] = true end
@@ -168,6 +286,22 @@ end
 function Shared.HasCertification(profile, id)
     if not id then return true end
     return Shared.HeldCertifications(profile)[id] == true
+end
+
+-- Whether a trainee may sit a course at all: prerequisites, rank floor, and
+-- not already holding it.
+function Shared.CourseAvailable(profile, courseId)
+    local course = Shared.Course(courseId)
+    if not course then return false, 'unknown_course' end
+    if Shared.HasCertification(profile, course.certification) then return false, 'already_held' end
+
+    local _, rankIndex = Shared.RankFor((profile or {}).xp or 0)
+    if rankIndex < (tonumber(course.minimumRank) or 0) + 1 then return false, 'rank_too_low' end
+
+    for _, required in ipairs(course.requires or {}) do
+        if not Shared.HasCertification(profile, required) then return false, 'missing_prerequisite' end
+    end
+    return true
 end
 
 -- Suppression --------------------------------------------------------------
@@ -218,6 +352,27 @@ function Shared.SeverityLabel(severity)
     return 'Fully involved'
 end
 
+-- Dispatch load ------------------------------------------------------------
+
+-- How many calls may be open at once. A bigger roster gets a busier city, so
+-- eight firefighters are not all standing on the same alarm.
+function Shared.MaxActiveCalls(onDuty)
+    local dispatch = Shared.Settings().dispatch or {}
+    local base = tonumber(dispatch.maxActive) or 2
+    local perFirefighter = tonumber(dispatch.perFirefighter) or 1
+    local ceiling = tonumber(dispatch.maxActiveCeiling) or 8
+    return math.min(ceiling, base + math.max(0, math.floor(onDuty or 0)) * perFirefighter)
+end
+
+function Shared.CallWeight(callType)
+    if type(callType) ~= 'table' then return 0 end
+    local weight = tonumber(callType.weight)
+    if weight then return math.max(0, math.floor(weight)) end
+    -- No explicit weight: fall back to inverting the priority so a working
+    -- fire still comes up more often than an alarm.
+    return math.max(1, 4 - (tonumber(callType.priority) or 2))
+end
+
 -- Formatting ---------------------------------------------------------------
 
 function Shared.FormatCallId(sequence)
@@ -248,8 +403,11 @@ function Shared.NewProfile(identifier, name)
     return {
         identifier = identifier,
         name = name,
+        department = nil,
         xp = 0,
         certifications = {},
+        training = {},
+        hiredAt = nil,
         stats = {
             calls = 0,
             firesExtinguished = 0,
@@ -263,8 +421,8 @@ function Shared.NewProfile(identifier, name)
     }
 end
 
--- Storage round-trips through JSON, so a profile read back can be missing
--- anything that was empty when it was written.
+-- A profile can come back from JSON or from a SQL row missing anything that
+-- was empty when it was written, and carrying anything an admin typed into it.
 function Shared.NormalizeProfile(profile, identifier, name)
     local base = Shared.NewProfile(identifier, name)
     if type(profile) ~= 'table' then return base end
@@ -272,10 +430,18 @@ function Shared.NormalizeProfile(profile, identifier, name)
     base.xp = math.max(0, tonumber(profile.xp) or 0)
     base.name = profile.name or name
     base.identifier = profile.identifier or identifier
+    base.hiredAt = tonumber(profile.hiredAt) or profile.hiredAt
+    if Shared.Department(profile.department) then base.department = profile.department end
 
     if type(profile.certifications) == 'table' then
         for _, id in ipairs(profile.certifications) do
             if Shared.Certification(id) then base.certifications[#base.certifications + 1] = id end
+        end
+    end
+
+    if type(profile.training) == 'table' then
+        for key, value in pairs(profile.training) do
+            if type(value) == 'number' then base.training[key] = value end
         end
     end
 

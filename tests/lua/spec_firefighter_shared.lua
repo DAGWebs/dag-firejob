@@ -45,13 +45,20 @@ test('the next rank reports what is still owed', function()
     assertNil(Shared.NextRank(999999))
 end)
 
+-- Rank grants the certifications a rank is enough to prove. The rest -- EMS,
+-- technical rescue, hazmat -- are earned at the academy or signed off by an
+-- officer, which is what makes the academy worth building.
 test('certifications accumulate from every rank passed, not just the current one', function()
     local Shared = shared()
     local held = Shared.HeldCertifications({ xp = 6000, certifications = {} })
     assertTrue(held.engine, 'granted at firefighter')
     assertTrue(held.ladder, 'granted at engineer')
-    assertTrue(held.rescue, 'granted at lieutenant')
-    assertNil(held.hazmat, 'captain has not been reached')
+    assertNil(held.rescue, 'technical rescue is trained for, not promoted into')
+    assertNil(held.command, 'chief has not been reached')
+
+    local chief = Shared.HeldCertifications({ xp = 25000, certifications = {} })
+    assertTrue(chief.command)
+    assertTrue(chief.engine, 'and everything below it')
 end)
 
 test('an officer sign-off grants a certification the rank has not reached', function()

@@ -102,16 +102,16 @@ local function applyStats(profile, call, share)
     end
 end
 
--- Called once, by Dispatch.Resolve. Returns what each attendee was awarded so
--- the caller can log or display it.
+-- Called once, by Dispatch.Resolve. Returns what each attendee was awarded,
+-- and the total actually paid out, so the caller can log it.
 function Progression.Award(call, reason)
     local attendees = attendeesFor(call)
-    if #attendees == 0 then return {} end
+    if #attendees == 0 then return {}, 0 end
 
     local value, lost = Progression.CallValue(call)
     local shares = Progression.Shares(call, attendees)
     local account = paySettings().account or 'bank'
-    local awards = {}
+    local awards, totalPaid = {}, 0
 
     for _, attendee in ipairs(attendees) do
         local profile = State.ProfileFor(attendee.identifier, attendee.name)
@@ -131,13 +131,19 @@ function Progression.Award(call, reason)
             local paid = false
             if amount > 0 and State.IsOnDuty(attendee.source) then
                 paid = Bridge.AddMoney(attendee.source, account, amount, ('firefighter:%s'):format(call.id))
-                if paid then profile.stats.earnings = (profile.stats.earnings or 0) + amount end
+                if paid then
+                    profile.stats.earnings = (profile.stats.earnings or 0) + amount
+                    totalPaid = totalPaid + amount
+                end
             end
 
             State.SaveProfile(profile)
 
             local afterRank, afterIndex = Shared.RankFor(profile.xp)
             if afterIndex > beforeRank and afterRank then
+                -- A promotion is only real once the framework grade moves with
+                -- it, or the next shift starts back on the old grade.
+                Fire.Departments.SyncGrade(attendee.source, profile)
                 Fire.Dispatch.Radio(('%s promoted to %s'):format(profile.name, afterRank.label), 'success')
                 Bridge.Notify(attendee.source, ('Promoted to %s.'):format(afterRank.label), 'success', 8000)
             end
@@ -166,7 +172,7 @@ function Progression.Award(call, reason)
         end
     end
 
-    return awards
+    return awards, totalPaid
 end
 
 -- Training -----------------------------------------------------------------
@@ -210,26 +216,30 @@ function Progression.AwardXp(identifier, amount)
     return true, nil, profile
 end
 
-function Progression.Leaderboard(limit)
-    local list = {}
-    for identifier, record in pairs(State.profiles.all()) do
-        local profile = Shared.NormalizeProfile(record, identifier, record.name)
-        list[#list + 1] = {
-            identifier = identifier,
-            name = profile.name or 'Unknown',
-            xp = profile.xp,
-            rank = Shared.RankLabel(profile.xp),
-            calls = profile.stats.calls or 0,
-            rescues = profile.stats.victimsRescued or 0
-        }
-    end
+-- Async, because with a database behind it the board covers everyone who ever
+-- served rather than whoever happens to be cached.
+function Progression.Leaderboard(limit, callback)
+    State.Leaderboard(limit, function(profiles, capped)
+        local list = {}
+        for _, profile in ipairs(profiles or {}) do
+            list[#list + 1] = {
+                identifier = profile.identifier,
+                name = profile.name or 'Unknown',
+                department = profile.department,
+                xp = profile.xp,
+                rank = Shared.RankLabel(profile.xp),
+                calls = (profile.stats or {}).calls or 0,
+                rescues = (profile.stats or {}).victimsRescued or 0
+            }
+        end
 
-    table.sort(list, function(a, b)
-        if a.xp ~= b.xp then return a.xp > b.xp end
-        return a.name < b.name
+        table.sort(list, function(a, b)
+            if a.xp ~= b.xp then return a.xp > b.xp end
+            return (a.name or '') < (b.name or '')
+        end)
+
+        local top = {}
+        for index = 1, math.min(#list, capped or 10) do top[index] = list[index] end
+        callback(top)
     end)
-
-    local capped = {}
-    for index = 1, math.min(#list, tonumber(limit) or 10) do capped[index] = list[index] end
-    return capped
 end

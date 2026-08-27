@@ -47,6 +47,15 @@ read_globals = {
     'SetVehicleEngineOn', 'SetVehicleNumberPlateText', 'SetVehicleOnGroundProperly',
     'StartParticleFxNonLoopedAtCoord', 'StartScriptFire', 'TaskPlayAnim',
     'TaskWarpPedIntoVehicle', 'UseParticleFxAssetNextCall',
+    -- hose lines, uniforms, wrecks, and the player-incident detectors
+    'ClearPedProp', 'CreateObject', 'GetEntitySpeed', 'GetPedDrawableVariation',
+    'GetPedPropIndex', 'GetPedPropTextureIndex', 'GetPedTextureVariation',
+    'GetVehicleEngineHealth', 'GetVehiclePedIsIn', 'HasEntityCollidedWithAnything',
+    'IsEntityOnFire', 'IsPedDeadOrDying', 'IsPedMale', 'NetworkDoesNetworkIdExist',
+    'PlaceObjectOnGroundProperly', 'SetEntityCollision', 'SetPedComponentVariation',
+    'SetPedPropIndex', 'SetSeethrough', 'SetVehicleBodyHealth',
+    'SetVehicleDeformationFixed', 'SetVehicleDoorBroken', 'SetVehicleEngineHealth',
+    'SmashVehicleWindow',
 }
 
 exclude_files = { 'tests/lua/vendor/**' }

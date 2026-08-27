@@ -62,6 +62,19 @@ local function registerStation(station)
         onSelect = function() Duty.OpenGarage(station.id) end
     })
 
+    if station.office then
+        DAG.Interactions.Register({
+            id = ('%s:office:%s'):format(Bridge.namespace, station.id),
+            coords = station.office,
+            label = 'Press ~INPUT_CONTEXT~ for the watch office',
+            distance = 2.0,
+            canInteract = function() return Client.OnDuty() end,
+            onSelect = function()
+                if Fire.Menus then Fire.Menus.OpenCommand() end
+            end
+        })
+    end
+
     if station.ret then
         DAG.Interactions.Register({
             id = ('%s:return:%s'):format(Bridge.namespace, station.id),
@@ -151,12 +164,20 @@ function Duty.HydrantStep()
     if not hydrant then return false end
 
     BeginTextCommandDisplayHelp('STRING')
-    AddTextComponentSubstringPlayerName(('Press ~INPUT_CONTEXT~ to charge the pump (%d/%d litres)')
+    AddTextComponentSubstringPlayerName((unit.supplied
+        and 'Press ~INPUT_CONTEXT~ to top the tank up (%d/%d litres, on the hydrant)'
+        or 'Press ~INPUT_CONTEXT~ to lay a supply line (%d/%d litres)')
         :format(math.floor(unit.water or 0), unit.capacity))
     EndTextCommandDisplayHelp(0, false, true, -1)
 
     if IsControlJustReleased(0, Config.InteractionKey) then
-        TriggerServerEvent(Bridge.Event('fire:refillTank'), hydrant)
+        -- Connecting the supply line is the better move and the one a crew
+        -- should reach for, so it is what the prompt does first.
+        if Fire.Hose and not Fire.Hose.Supplied() then
+            Fire.Hose.ConnectSupply()
+        else
+            TriggerServerEvent(Bridge.Event('fire:refillTank'), hydrant)
+        end
     end
     return true
 end
@@ -182,4 +203,8 @@ RegisterKeyMapping(prefix .. ':fdmenu', 'Firefighter menu', 'keyboard', 'F6')
 RegisterCommand(prefix .. ':fdhose', function()
     if not Client.OnDuty() then return Bridge.Notify('You are not on duty.', 'error') end
     Suppression.Toggle('hose')
+end, false)
+
+RegisterCommand(prefix .. ':fd911', function(_, args)
+    Fire.Events.Report(args[1] or 'structure')
 end, false)

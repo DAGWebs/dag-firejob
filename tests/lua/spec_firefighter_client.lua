@@ -5,8 +5,12 @@
 local CLIENT_FILES = {
     'modules/firefighter/client/state.lua',
     'modules/firefighter/client/fire.lua',
+    'modules/firefighter/client/hose.lua',
     'modules/firefighter/client/rescue.lua',
+    'modules/firefighter/client/uniform.lua',
+    'modules/firefighter/client/events.lua',
     'modules/firefighter/client/duty.lua',
+    'modules/firefighter/client/academy.lua',
     'modules/firefighter/client/hud.lua',
     'modules/firefighter/client/menus.lua'
 }
@@ -53,8 +57,16 @@ local function callPayload(overrides)
     return call
 end
 
-local function goOnDuty()
-    fire('fire:duty', { station = 'davis', since = 0, air = 1500, extinguisher = 220 })
+local function goOnDuty(extra)
+    local payload = { station = 'davis', department = 'lsfd', since = 0, air = 1500, extinguisher = 220 }
+    for key, value in pairs(extra or {}) do payload[key] = value end
+    fire('fire:duty', payload)
+end
+
+-- The server is what says a line has been pulled off a pump; the client only
+-- draws it, so tests hand the duty payload the same flag the server would.
+local function withLine()
+    goOnDuty({ hose = { unit = 1, netId = 901 } })
 end
 
 -- Mirror --------------------------------------------------------------------
@@ -178,7 +190,7 @@ end)
 
 test('spraying reports the aimed node to the server at the configured rate', function()
     loadClient()
-    goOnDuty()
+    withLine()
     fire('fire:sync', { callPayload() })
 
     DAG.Fire.Suppression.Equip('hose')
@@ -201,6 +213,169 @@ test('spraying reports the aimed node to the server at the configured rate', fun
     assertNil(DAG.Fire.Suppression.SprayStep(), 'the next tick is inside the report interval')
     harness.gameTimer = harness.gameTimer + 500
     assertTrue(DAG.Fire.Suppression.SprayStep() ~= nil)
+end)
+
+-- A hose is a line off a pump, not a thing you hold: with no line charged
+-- there is nothing to report and the client does not bother the server.
+test('a hose with no line charged sprays nothing', function()
+    loadClient()
+    goOnDuty()
+    fire('fire:sync', { callPayload() })
+
+    DAG.Fire.Suppression.Equip('hose')
+    harness.pedShooting = true
+    harness.gameTimer = 5000
+
+    assertNil(DAG.Fire.Suppression.SprayStep())
+    assertEq(#harness.serverEvents, 1, 'only the request for a line went out')
+    assertEq(harness.serverEvents[1].event, DAG.Framework.Event('fire:deployLine'))
+end)
+
+test('an extinguisher needs no line at all', function()
+    loadClient()
+    goOnDuty()
+    fire('fire:sync', { callPayload() })
+
+    DAG.Fire.Suppression.Equip('extinguisher')
+    harness.pedShooting = true
+    harness.gameTimer = 5000
+    assertTrue(DAG.Fire.Suppression.SprayStep() ~= nil)
+end)
+
+-- Hose lines ------------------------------------------------------------------
+
+test('the line is laid behind the firefighter as they walk it in', function()
+    loadClient()
+    withLine()
+    harness.playerCoords = vector3(0.0, 0.0, 0.0)
+    fire('fire:lineDeployed', { unit = 1, netId = 901 })
+
+    assertTrue(DAG.Fire.Hose.Deployed())
+    assertEq(DAG.Fire.Hose.Step(), 0, 'nothing laid until they move')
+
+    harness.playerCoords = vector3(5.0, 0.0, 0.0)
+    assertEq(DAG.Fire.Hose.Step(), 1)
+    harness.playerCoords = vector3(10.0, 0.0, 0.0)
+    assertEq(DAG.Fire.Hose.Step(), 2, 'one length every few metres')
+end)
+
+test('the stretch warning tracks the distance back to the pump', function()
+    loadClient()
+    withLine()
+    harness.playerCoords = vector3(0.0, 0.0, 0.0)
+    fire('fire:lineDeployed', { unit = 1 })
+
+    assertEq(DAG.Fire.Hose.Stretch(), 0)
+    harness.playerCoords = vector3(19.0, 0.0, 0.0)
+    assertEq(DAG.Fire.Shared.Round(DAG.Fire.Hose.Stretch(), 1), 0.5)
+
+    harness.playerCoords = vector3(60.0, 0.0, 0.0)
+    assertTrue(DAG.Fire.Hose.Stretch() >= 1.0, 'past the end of the line')
+end)
+
+test('stowing the line picks every length of it back up', function()
+    loadClient()
+    withLine()
+    harness.playerCoords = vector3(0.0, 0.0, 0.0)
+    fire('fire:lineDeployed', { unit = 1 })
+
+    harness.playerCoords = vector3(20.0, 0.0, 0.0)
+    DAG.Fire.Hose.Step()
+    assertTrue(harness.count(harness.entities) > 0)
+
+    fire('fire:lineStowed')
+    assertFalse(DAG.Fire.Hose.Deployed())
+    assertEq(harness.count(harness.entities), 0)
+end)
+
+-- Uniform ---------------------------------------------------------------------
+
+test('clocking on puts the gear on and clocking off gives the clothes back', function()
+    loadClient()
+    harness.pedOutfit.components[4] = { 12, 3 }
+    harness.pedOutfit.props[0] = { -1, 0 }
+
+    goOnDuty()
+    assertEq(DAG.Fire.Uniform.Current(), 'turnout')
+    assertEq(harness.pedOutfit.components[4][1], 30, 'wearing the turnout trousers')
+    assertEq(harness.pedOutfit.props[0][1], 124, 'and the helmet')
+
+    fire('fire:duty', false)
+    assertNil(DAG.Fire.Uniform.Current())
+    assertEq(harness.pedOutfit.components[4][1], 12, 'their own clothes are back')
+    assertEq(harness.pedOutfit.props[0][1], -1, 'and the helmet is off')
+end)
+
+test('a county department wears its own set', function()
+    loadClient()
+    fire('fire:duty', { station = 'paleto', department = 'bcfd', since = 0, air = 1500 })
+    assertEq(harness.pedOutfit.components[4][2], 1, 'the county texture, not the city one')
+end)
+
+-- Player-caused incidents -------------------------------------------------------
+
+test('a burning vehicle is reported once, not every tick', function()
+    loadClient()
+    harness.pedVehicle = 500
+    harness.entities[500] = true
+    harness.entityOnFire[500] = true
+
+    assertTrue(DAG.Fire.Events.CheckVehicleFire())
+    assertEq(#harness.serverEvents, 1)
+    assertEq(harness.serverEvents[1].event, DAG.Framework.Event('fire:vehicleFire'))
+
+    assertFalse(DAG.Fire.Events.CheckVehicleFire(), 'still burning, already called in')
+    assertEq(#harness.serverEvents, 1)
+end)
+
+test('only a real impact counts as a collision', function()
+    loadClient()
+    harness.pedVehicle = 500
+    harness.entities[500] = true
+    harness.vehicleSpeed = 30.0
+    DAG.Fire.Events.CheckCollision()
+
+    -- Slowing down normally, with nothing hit.
+    harness.vehicleSpeed = 28.0
+    harness.vehicleCollided = false
+    assertFalse(DAG.Fire.Events.CheckCollision())
+
+    harness.vehicleSpeed = 30.0
+    DAG.Fire.Events.CheckCollision()
+    harness.vehicleSpeed = 2.0
+    harness.vehicleCollided = true
+    assertTrue(DAG.Fire.Events.CheckCollision())
+    assertEq(harness.serverEvents[#harness.serverEvents].event, DAG.Framework.Event('fire:collision'))
+end)
+
+-- Academy -----------------------------------------------------------------------
+
+test('the classroom runs down and then hands over to the drill', function()
+    loadClient()
+    goOnDuty()
+    local academy = DAG.Fire.Shared.Settings().academy
+    harness.playerCoords = vector3(academy.classroom.x, academy.classroom.y, academy.classroom.z)
+
+    fire('fire:course', { course = 'engine', label = 'Pump operations', phase = 'classroom', duration = 30000 })
+    assertEq(DAG.Fire.Academy.Step(), 'studying')
+    assertEq(DAG.Fire.Shared.Round(DAG.Fire.Academy.Progress(), 1), 0)
+
+    harness.gameTimer = harness.gameTimer + 30000
+    assertEq(DAG.Fire.Academy.Step(), 'ready')
+    assertEq(DAG.Fire.Academy.Course().phase, 'ready')
+end)
+
+test('walking out of the classroom drops the course', function()
+    loadClient()
+    goOnDuty()
+    local academy = DAG.Fire.Shared.Settings().academy
+    harness.playerCoords = vector3(academy.classroom.x, academy.classroom.y, academy.classroom.z)
+    fire('fire:course', { course = 'engine', phase = 'classroom', duration = 30000 })
+
+    harness.playerCoords = vector3(academy.classroom.x + 200, academy.classroom.y, academy.classroom.z)
+    assertEq(DAG.Fire.Academy.Step(), 'left')
+    assertNil(DAG.Fire.Academy.Course())
+    assertEq(harness.serverEvents[#harness.serverEvents].event, DAG.Framework.Event('fire:abandonCourse'))
 end)
 
 test('nothing is sprayed off duty or with the nozzle stowed', function()

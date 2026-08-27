@@ -2,7 +2,8 @@
 -- spilled, and what a firefighter is allowed to do about it.
 --
 -- The client renders this and asks for changes; nothing here trusts a
--- coordinate, a duration, or a water volume that arrived over the network.
+-- coordinate, a duration, a water volume, or an item that arrived over the
+-- network.
 
 local Bridge = DAG.Framework
 local Fire = DAG.Fire
@@ -45,6 +46,29 @@ local function offset(coords, radius)
     }
 end
 
+local function pick(list)
+    if type(list) ~= 'table' or #list == 0 then return nil end
+    return list[Incident.random(1, #list)]
+end
+
+-- Equipment ----------------------------------------------------------------
+
+-- 'auto' enforces items only where the framework can actually report an
+-- inventory, so a standalone or item-less server is not locked out of its own
+-- job by a config default.
+function Incident.ItemsEnforced()
+    local mode = (Shared.Settings().items or {}).enforce
+    if mode == true then return true end
+    if mode == false then return false end
+    return Bridge.Supports('getItemCount') or Bridge.InventoryProvider() == 'ox'
+end
+
+function Incident.HasTool(source, role)
+    local item = Shared.Item(role)
+    if not item or not Incident.ItemsEnforced() then return true end
+    return Bridge.HasItem(source, item, 1)
+end
+
 -- Scene construction -------------------------------------------------------
 
 local function newNode(call, coords, intensity)
@@ -65,19 +89,27 @@ end
 
 Incident.NewNode = newNode
 
-local function newVictim(call, coords, trapped)
+local function newVictim(call, coords, options)
+    options = options or {}
     call.victimSequence = (call.victimSequence or 0) + 1
+
     local id = ('v%d'):format(call.victimSequence)
     call.victims[id] = {
         id = id,
         coords = Shared.Coords(coords),
         heading = Shared.Round(Incident.random() * 360.0, 1),
-        state = trapped and Fire.VictimState.trapped or Fire.VictimState.freed,
+        model = pick((Shared.Settings().victims or {}).models) or 'a_m_y_business_01',
+        state = options.trapped and Fire.VictimState.trapped or Fire.VictimState.freed,
         condition = Shared.Round(between(45, 95), 0),
-        carriedBy = nil
+        wreck = options.wreck,
+        -- Extrication calls are worked in stages against the wreck; everything
+        -- else is a single pull.
+        stage = options.staged and 1 or nil
     }
     return call.victims[id]
 end
+
+Incident.NewVictim = newVictim
 
 local function newHazard(call, coords)
     call.hazardSequence = (call.hazardSequence or 0) + 1
@@ -92,9 +124,21 @@ local function newHazard(call, coords)
     return call.hazards[id]
 end
 
+local function newWreck(call, coords, models)
+    call.wreckSequence = (call.wreckSequence or 0) + 1
+    local id = ('w%d'):format(call.wreckSequence)
+    call.wrecks[id] = {
+        id = id,
+        coords = Shared.Coords(coords),
+        heading = Shared.Round(Incident.random() * 360.0, 1),
+        model = pick(models) or 'sultan'
+    }
+    return call.wrecks[id]
+end
+
 -- Populates a freshly dispatched call from its catalogue entry.
 function Incident.Build(call, callType)
-    call.fires, call.victims, call.hazards = {}, {}, {}
+    call.fires, call.victims, call.hazards, call.wrecks = {}, {}, {}, {}
     local radius = tonumber(call.radius) or 8.0
 
     local fires = callType.fires or {}
@@ -102,10 +146,24 @@ function Incident.Build(call, callType)
         newNode(call, offset(call.coords, radius), between((fires.intensity or {}).min or 40, (fires.intensity or {}).max or 80))
     end
 
+    -- Wrecks come first so the patients trapped in them can be placed at one.
+    local wrecks = callType.wrecks
+    local placed = {}
+    if wrecks then
+        for _ = 1, math.max(1, countBetween(wrecks)) do
+            placed[#placed + 1] = newWreck(call, offset(call.coords, radius * 0.4), wrecks.models)
+        end
+    end
+
     local victims = callType.victims or {}
     if victims.chance and chance(victims.chance) then
-        for _ = 1, math.max(1, countBetween(victims)) do
-            newVictim(call, offset(call.coords, radius * 0.6), victims.trapped == true)
+        for index = 1, math.max(1, countBetween(victims)) do
+            local wreck = placed[((index - 1) % math.max(1, #placed)) + 1]
+            newVictim(call, wreck and wreck.coords or offset(call.coords, radius * 0.6), {
+                trapped = victims.trapped == true,
+                staged = callType.extrication == true and victims.trapped == true,
+                wreck = wreck and wreck.id or nil
+            })
         end
     end
 
@@ -241,28 +299,43 @@ end
 -- Water --------------------------------------------------------------------
 
 -- Where this firefighter's water is coming from. A personal extinguisher is
--- their own; a hose or a deck monitor draws from an apparatus they are
--- standing next to, which is what makes parking the engine matter.
+-- their own; a hose or a deck monitor draws from an apparatus, and the hose
+-- only reaches as far as the line that has been laid off it.
 function Incident.SupplyFor(source, agentId, coords)
     local record = State.Duty(source)
     if not record then return nil, 'off_duty' end
+
+    local agent = Shared.Agent(agentId)
+    if not agent then return nil, 'unknown_agent' end
 
     if agentId == 'extinguisher' then
         return { kind = 'extinguisher', available = record.extinguisher or 0 }, nil
     end
 
-    local reach = tonumber((Shared.Settings().water or {}).apparatusDistance) or 8.0
+    if agent.needsLine and not record.hose then return nil, 'no_line' end
+
+    local water = Shared.Settings().water or {}
+    local hose = Shared.Settings().hose or {}
+    local reach = agent.needsLine and (tonumber(hose.attackLength) or 38.0)
+        or (tonumber(water.apparatusDistance) or 8.0)
+
     local best, bestDistance
     State.EachOnDuty(function(other)
         local unit = State.Unit(other)
-        if not unit or not unit.coords or (unit.water or 0) <= 0 then return end
+        if not unit or not unit.coords or (unit.capacity or 0) <= 0 then return end
+        if (unit.water or 0) <= 0 and not unit.supplied then return end
+
         local gap = Shared.Distance(coords, unit.coords)
         if gap <= reach and (not bestDistance or gap < bestDistance) then
             best, bestDistance = { kind = 'apparatus', unit = unit, available = unit.water }, gap
         end
     end)
 
-    if not best then return nil, 'no_supply' end
+    if not best then
+        return nil, record.hose and 'line_stretched' or 'no_supply'
+    end
+    -- A pump on a hydrant is drawing, not emptying: it never runs the tank dry.
+    if best.unit.supplied then best.available = math.max(best.available, tonumber(water.refillRate) or 400) end
     return best, nil
 end
 
@@ -272,13 +345,15 @@ local function drawSupply(source, supply, litres)
         record.extinguisher = math.max(0, (record.extinguisher or 0) - litres)
         return record.extinguisher
     end
+    -- A supplied pump is refilled by the hydrant as fast as it is emptied.
+    if supply.unit.supplied then return supply.unit.water end
     supply.unit.water = math.max(0, (supply.unit.water or 0) - litres)
     return supply.unit.water
 end
 
--- Applies one client water report. Everything about it is checked: duty, call
--- membership, the node, the agent, the player's real distance to the fire, the
--- report rate, and whether there is any water left to spray.
+-- Applies one client water report. Everything about it is checked: duty, the
+-- node, the agent, the tool in hand, the player's real distance to the fire,
+-- the report rate, and whether there is any water left to spray.
 function Incident.ApplyWater(source, callId, nodeId, litres, agentId)
     local record = State.Duty(source)
     if not record then return false, 'off_duty' end
@@ -294,6 +369,9 @@ function Incident.ApplyWater(source, callId, nodeId, litres, agentId)
 
     local agent = Shared.Agent(agentId)
     if not agent then return false, 'unknown_agent' end
+    if agent.item and Incident.ItemsEnforced() and not Bridge.HasItem(source, agent.item, 1) then
+        return false, 'missing_item'
+    end
 
     local now = GetGameTimer()
     local minimumGap = (tonumber(settings().reportInterval) or 400) * 0.6
@@ -338,18 +416,126 @@ function Incident.ApplyWater(source, callId, nodeId, litres, agentId)
     }
 end
 
+-- Hose lines ---------------------------------------------------------------
+
+-- An attack line is pulled off a pump and walked out. The server records that
+-- it exists and which pump it came from; the client draws it and the supply
+-- check above enforces how far it reaches.
+function Incident.DeployLine(source, unitSource)
+    local record = State.Duty(source)
+    if not record then return false, 'off_duty' end
+    if record.hose then return false, 'already_deployed' end
+    if not Incident.HasTool(source, 'hose') then return false, 'missing_item' end
+
+    local coords = State.PlayerCoords(source)
+    if not coords then return false, 'no_position' end
+
+    local water = Shared.Settings().water or {}
+    local reach = (tonumber(water.apparatusDistance) or 8.0) + 2.0
+
+    -- A crew works off whichever pump is parked there, not only off their own,
+    -- so the firefighter who drove is not the only one who can take a line.
+    local owner = tonumber(unitSource) or source
+    local unit = State.Unit(owner)
+    if not unit or (unit.capacity or 0) <= 0 or not unit.coords
+        or Shared.Distance(coords, unit.coords) > reach then
+        owner, unit = nil, nil
+        local bestDistance
+        State.EachOnDuty(function(other)
+            local candidate = State.Unit(other)
+            if not candidate or not candidate.coords or (candidate.capacity or 0) <= 0 then return end
+            local gap = Shared.Distance(coords, candidate.coords)
+            if gap <= reach and (not bestDistance or gap < bestDistance) then
+                owner, unit, bestDistance = other, candidate, gap
+            end
+        end)
+    end
+
+    if not unit then return false, State.Unit(source) and 'out_of_range' or 'no_unit' end
+
+    record.hose = { unit = owner, netId = unit.netId, deployedAt = GetGameTimer() }
+    return true, nil, record.hose
+end
+
+function Incident.StowLine(source)
+    local record = State.Duty(source)
+    if not record or not record.hose then return false, 'no_line' end
+    record.hose = nil
+    return true
+end
+
+-- A supply line puts the pump on the hydrant: the tank stops going down, and
+-- it stays that way until the apparatus is driven away from the hydrant.
+function Incident.ConnectSupply(source, hydrantCoords)
+    local unit = State.Unit(source)
+    if not unit then return false, 'no_unit' end
+    if (unit.capacity or 0) <= 0 then return false, 'no_tank' end
+    if unit.supplied then return false, 'already_supplied' end
+
+    local coords = State.PlayerCoords(source)
+    local hydrant = Shared.Coords(hydrantCoords)
+    local water = Shared.Settings().water or {}
+    local hose = Shared.Settings().hose or {}
+    if not coords or not hydrant then return false, 'no_position' end
+    if Shared.Distance(coords, hydrant) > (tonumber(water.hydrantDistance) or 4.0) + 2.0 then return false, 'no_hydrant' end
+    if not unit.coords or Shared.Distance(unit.coords, hydrant) > (tonumber(hose.supplyLength) or 14.0) then
+        return false, 'apparatus_too_far'
+    end
+
+    unit.supplied = true
+    unit.hydrant = hydrant
+    unit.water = unit.capacity
+    return true, nil, unit
+end
+
+function Incident.DisconnectSupply(source)
+    local unit = State.Unit(source)
+    if not unit or not unit.supplied then return false, 'not_supplied' end
+    unit.supplied, unit.hydrant = false, nil
+    return true
+end
+
+-- Called from the simulation tick: driving the pump away pulls the line.
+function Incident.CheckSupply(unit)
+    if not unit or not unit.supplied then return false end
+    local hose = Shared.Settings().hose or {}
+    if not unit.coords or not unit.hydrant then return false end
+    if Shared.Distance(unit.coords, unit.hydrant) <= (tonumber(hose.supplyLength) or 14.0) + 3.0 then return false end
+
+    unit.supplied, unit.hydrant = false, nil
+    return true
+end
+
 -- Timed actions ------------------------------------------------------------
 
 -- Extrication, treatment, and containment are all "stand here and work for N
--- seconds". The client runs the progress bar, but the server records the start
--- and refuses a completion that came back too early or from too far away.
+-- seconds with the right thing in your hands". The client runs the progress
+-- bar, but the server records the start and refuses a completion that came
+-- back too early, from too far away, or without the tool.
 local ACTIONS = {
-    free = { certification = 'rescue', duration = function(s) return (s.victims or {}).extricationTime or 12000 end },
-    treat = { certification = 'ems', duration = function(s) return (s.victims or {}).treatmentTime or 8000 end },
-    contain = { certification = 'hazmat', duration = function(s) return (s.hazards or {}).containmentTime or 15000 end }
+    free = { certification = 'rescue' },
+    treat = { certification = 'ems', tool = 'medbag' },
+    contain = { certification = 'hazmat', tool = 'hazmat' }
 }
 
 Incident.Actions = ACTIONS
+
+-- The stage a staged extrication is currently on, or nil for a single pull.
+function Incident.StageFor(victim)
+    if not victim or not victim.stage then return nil end
+    local stages = (Shared.Settings().extrication or {}).stages or {}
+    return stages[victim.stage], #stages
+end
+
+local function actionDuration(kind, victimOrHazard)
+    local victims = Shared.Settings().victims or {}
+    if kind == 'contain' then return tonumber((Shared.Settings().hazards or {}).containmentTime) or 15000 end
+    if kind == 'treat' then return tonumber(victims.treatmentTime) or 8000 end
+
+    local stage = Incident.StageFor(victimOrHazard)
+    if stage then return tonumber(stage.time) or 8000 end
+    return tonumber(victims.extricationTime) or 12000
+end
 
 local function certified(source, action)
     if not action.certification then return true end
@@ -380,19 +566,28 @@ function Incident.BeginAction(source, callId, kind, targetId)
     if kind == 'treat' and target.state ~= Fire.VictimState.freed then return false, 'not_ready' end
     if kind == 'contain' and target.contained then return false, 'already_contained' end
 
+    -- The stage decides the tool for a staged extrication; everything else
+    -- names its tool on the action.
+    local stage = kind == 'free' and Incident.StageFor(target) or nil
+    local requiredItem = stage and stage.item or (action.tool and Shared.Item(action.tool))
+    if requiredItem and Incident.ItemsEnforced() and not Bridge.HasItem(source, requiredItem, 1) then
+        return false, 'missing_item'
+    end
+
     local coords = State.PlayerCoords(source)
     local reach = tonumber((Shared.Settings().dispatch or {}).actionDistance) or 12.0
     if not coords or Shared.Distance(coords, target.coords) > reach then return false, 'out_of_range' end
 
-    local duration = tonumber(action.duration(Shared.Settings())) or 10000
+    local duration = actionDuration(kind, target)
     record.action = {
         kind = kind,
         callId = callId,
         targetId = targetId,
+        stage = stage and stage.id or nil,
         startedAt = GetGameTimer(),
         duration = duration
     }
-    return true, nil, duration
+    return true, nil, duration, stage
 end
 
 function Incident.CancelAction(source)
@@ -423,8 +618,23 @@ function Incident.CompleteAction(source)
     local reach = tonumber((Shared.Settings().dispatch or {}).actionDistance) or 12.0
     if not coords or Shared.Distance(coords, target.coords) > reach then return false, 'left_scene' end
 
+    local stageLabel, remaining = nil, nil
     if pending.kind == 'free' then
-        target.state = Fire.VictimState.freed
+        local stage, total = Incident.StageFor(target)
+        if stage then
+            -- One stage of the extrication is done; the patient is out only
+            -- when the last one is.
+            stageLabel = stage.label
+            target.stage = target.stage + 1
+            if target.stage > total then
+                target.stage = nil
+                target.state = Fire.VictimState.freed
+            else
+                remaining = total - target.stage + 1
+            end
+        else
+            target.state = Fire.VictimState.freed
+        end
     elseif pending.kind == 'treat' then
         target.state = Fire.VictimState.treated
         target.condition = math.max(target.condition, 55)
@@ -436,7 +646,13 @@ function Incident.CompleteAction(source)
     end
 
     target.workedBy = record.identifier
-    return true, nil, { kind = pending.kind, call = call, target = target }
+    return true, nil, {
+        kind = pending.kind,
+        call = call,
+        target = target,
+        stage = stageLabel,
+        remaining = remaining
+    }
 end
 
 -- Transport ----------------------------------------------------------------
@@ -490,18 +706,23 @@ function Incident.RefillApparatus(source, hydrantCoords)
     return true, nil, unit.water
 end
 
+local function atSupplyPoint(source)
+    local record = State.Duty(source)
+    local coords = record and State.PlayerCoords(source)
+    if not coords then return false end
+
+    local station = record.station and Shared.Station(record.station)
+    if station and Shared.Distance(coords, station.supply or station.coords) <= 6.0 then return true end
+    return select(1, Incident.SupplyFor(source, 'monitor', coords)) ~= nil
+end
+
 function Incident.RefillExtinguisher(source)
     local record = State.Duty(source)
     if not record then return false, 'off_duty' end
 
     local capacity = tonumber((Shared.Settings().water or {}).extinguisherCapacity) or 220
     if (record.extinguisher or 0) >= capacity then return false, 'already_full' end
-
-    local coords = State.PlayerCoords(source)
-    local station = record.station and Shared.Station(record.station)
-    local nearStation = station and coords and Shared.Distance(coords, station.supply or station.coords) <= 6.0
-    local supply = coords and select(1, Incident.SupplyFor(source, 'hose', coords))
-    if not nearStation and not (supply and supply.kind == 'apparatus') then return false, 'no_supply' end
+    if not atSupplyPoint(source) then return false, 'no_supply' end
 
     record.extinguisher = capacity
     return true, nil, capacity
@@ -514,12 +735,7 @@ function Incident.RefillAir(source)
     local scba = Shared.Settings().scba or {}
     local capacity = tonumber(scba.capacity) or 1500
     if (record.air or 0) >= capacity then return false, 'already_full' end
-
-    local coords = State.PlayerCoords(source)
-    local station = record.station and Shared.Station(record.station)
-    local nearStation = station and coords and Shared.Distance(coords, station.supply or station.coords) <= 6.0
-    local supply = coords and select(1, Incident.SupplyFor(source, 'hose', coords))
-    if not nearStation and not supply then return false, 'no_supply' end
+    if not atSupplyPoint(source) then return false, 'no_supply' end
 
     record.air = capacity
     return true, nil, capacity
@@ -536,5 +752,3 @@ function Incident.ConsumeAir(source, amount)
     record.air = math.max(0, (record.air or 0) - Shared.Clamp(tonumber(amount) or 0, 0, maximum))
     return record.air
 end
-
-Bridge.Debug('firefighter incident module loaded')

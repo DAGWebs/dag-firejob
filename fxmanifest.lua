@@ -22,8 +22,12 @@ client_scripts {
     'modules/interactions/client.lua',
     'modules/firefighter/client/state.lua',
     'modules/firefighter/client/fire.lua',
+    'modules/firefighter/client/hose.lua',
     'modules/firefighter/client/rescue.lua',
+    'modules/firefighter/client/uniform.lua',
+    'modules/firefighter/client/events.lua',
     'modules/firefighter/client/duty.lua',
+    'modules/firefighter/client/academy.lua',
     'modules/firefighter/client/hud.lua',
     'modules/firefighter/client/menus.lua',
     'client/main.lua'
@@ -44,10 +48,14 @@ server_scripts {
     'modules/commands/server.lua',
     'modules/access/server.lua',
     'modules/repository/server.lua',
+    'modules/firefighter/server/database.lua',
     'modules/firefighter/server/state.lua',
     'modules/firefighter/server/incident.lua',
     'modules/firefighter/server/progression.lua',
+    'modules/firefighter/server/departments.lua',
     'modules/firefighter/server/dispatch.lua',
+    'modules/firefighter/server/academy.lua',
+    'modules/firefighter/server/events.lua',
     'modules/firefighter/server/api.lua',
     'server/main.lua'
 }

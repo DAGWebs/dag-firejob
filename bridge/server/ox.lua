@@ -87,6 +87,12 @@ Bridge.RegisterAdapter('ox', {
         local groups = safe(function() return p.getGroups() end)
         return type(groups) == 'table' and groups[permission] ~= nil
     end,
+    -- Ox Core has no jobs, only groups, so a hire is a group grant.
+    setJob = function(source, job, grade)
+        local p = player(source)
+        if not p then return false end
+        return safe(function() p.setGroup(job, grade) return true end) == true
+    end,
     setDuty = function(source, onDuty)
         local p = player(source)
         if not p then return false end

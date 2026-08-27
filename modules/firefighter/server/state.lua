@@ -4,18 +4,23 @@
 -- working which call lives in this file. The other server modules mutate it
 -- through these accessors so there is exactly one place that decides what a
 -- client is allowed to be told.
+--
+-- Profiles are cached here and written behind: reads stay synchronous for
+-- every gameplay path, and the SQL round trip happens on the flush thread.
 
 local Bridge = DAG.Framework
 local Fire = DAG.Fire
 local Shared = Fire.Shared
+local Database = Fire.Database
 local State = {}
 Fire.State = State
 
 local roster, calls, units = {}, {}, {}
+local cache, dirty = {}, {}
 local sequence = 0
 
--- Profiles are resource-owned data: XP, signed-off training, and career stats.
--- The framework still owns the job, the grade, and the bank balance.
+-- The JSON store is the fallback when no SQL driver is running, and it is also
+-- what the template's own repository tests exercise.
 local profiles = DAG.Repository.Create('firefighter_profiles', {
     validate = function(record)
         if type(record.identifier) ~= 'string' or record.identifier == '' then
@@ -32,9 +37,45 @@ State.profiles = profiles
 
 -- Profiles -----------------------------------------------------------------
 
+local function decode(value)
+    if type(value) == 'table' then return value end
+    if type(value) ~= 'string' or value == '' then return nil end
+    local ok, decoded = pcall(json.decode, value)
+    return ok and decoded or nil
+end
+
+local function fromRow(row, identifier, name)
+    if type(row) ~= 'table' then return nil end
+    return Shared.NormalizeProfile({
+        identifier = row.identifier or identifier,
+        name = row.name or name,
+        department = row.department,
+        xp = tonumber(row.xp) or 0,
+        certifications = decode(row.certifications) or {},
+        training = decode(row.training) or {},
+        stats = decode(row.stats) or {},
+        hiredAt = tonumber(row.hired_at)
+    }, identifier, name)
+end
+
+function State.CacheProfile(profile)
+    if type(profile) ~= 'table' or type(profile.identifier) ~= 'string' then return nil end
+    cache[profile.identifier] = profile
+    return profile
+end
+
+-- Synchronous read. After a firefighter has clocked on their profile is always
+-- cached, so every gameplay path can rely on this.
 function State.ProfileFor(identifier, name)
     if type(identifier) ~= 'string' or identifier == '' then return nil end
-    return Shared.NormalizeProfile(profiles.get(identifier), identifier, name)
+    if cache[identifier] then return cache[identifier] end
+
+    if not Database.Available() then
+        return State.CacheProfile(Shared.NormalizeProfile(profiles.get(identifier), identifier, name))
+    end
+    -- No cached row and SQL owns the data: hand back a default rather than a
+    -- stale one, and let LoadProfile fill it in.
+    return Shared.NormalizeProfile(nil, identifier, name)
 end
 
 function State.Profile(source)
@@ -43,9 +84,103 @@ function State.Profile(source)
     return State.ProfileFor(identifier, Bridge.GetName(source))
 end
 
+-- Async load. Used before anything that would write a profile, so a firefighter
+-- never clocks on against an empty record and overwrites their career.
+function State.LoadProfile(identifier, name, callback)
+    if type(identifier) ~= 'string' or identifier == '' then
+        if callback then callback(nil) end
+        return
+    end
+
+    if not Database.Available() then
+        local profile = State.CacheProfile(Shared.NormalizeProfile(profiles.get(identifier), identifier, name))
+        if callback then callback(profile) end
+        return
+    end
+
+    local query = ('SELECT * FROM `%s` WHERE `identifier` = ? LIMIT 1'):format(Database.Table('profiles'))
+    Database.Single(query, { identifier }, function(row)
+        local profile = fromRow(row, identifier, name) or Shared.NormalizeProfile(nil, identifier, name)
+        State.CacheProfile(profile)
+        if callback then callback(profile) end
+    end)
+end
+
 function State.SaveProfile(profile)
     if type(profile) ~= 'table' or type(profile.identifier) ~= 'string' then return nil, 'invalid_profile' end
-    return profiles.save(profile.identifier, profile)
+    State.CacheProfile(profile)
+
+    if not Database.Available() then
+        return profiles.save(profile.identifier, profile)
+    end
+
+    dirty[profile.identifier] = true
+    return profile
+end
+
+local function writeProfile(profile)
+    local query = ([[INSERT INTO `%s`
+        (`identifier`, `name`, `department`, `xp`, `certifications`, `training`, `stats`, `hired_at`)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+            `name` = VALUES(`name`), `department` = VALUES(`department`), `xp` = VALUES(`xp`),
+            `certifications` = VALUES(`certifications`), `training` = VALUES(`training`),
+            `stats` = VALUES(`stats`), `hired_at` = VALUES(`hired_at`)]]):format(Database.Table('profiles'))
+
+    Database.Execute(query, {
+        profile.identifier,
+        profile.name,
+        profile.department,
+        math.floor(profile.xp or 0),
+        json.encode(profile.certifications or {}),
+        json.encode(profile.training or {}),
+        json.encode(profile.stats or {}),
+        profile.hiredAt
+    })
+end
+
+function State.FlushProfiles()
+    local written = 0
+    for identifier in pairs(dirty) do
+        local profile = cache[identifier]
+        dirty[identifier] = nil
+        if profile then
+            writeProfile(profile)
+            written = written + 1
+        end
+    end
+    return written
+end
+
+function State.DropCachedProfile(identifier)
+    if dirty[identifier] and cache[identifier] then
+        writeProfile(cache[identifier])
+        dirty[identifier] = nil
+    end
+    cache[identifier] = nil
+end
+
+-- Ordered by experience. Reads straight from SQL when it owns the data so the
+-- board covers everyone who ever served, not just who is cached.
+function State.Leaderboard(limit, callback)
+    local capped = math.floor(Shared.Clamp(tonumber(limit) or 10, 1, 50))
+
+    if not Database.Available() then
+        local list = {}
+        for identifier, record in pairs(profiles.all()) do
+            list[#list + 1] = Shared.NormalizeProfile(record, identifier, record.name)
+        end
+        return callback(list, capped)
+    end
+
+    local query = ('SELECT * FROM `%s` ORDER BY `xp` DESC LIMIT %d'):format(Database.Table('profiles'), capped)
+    Database.Query(query, {}, function(rows)
+        local list = {}
+        for _, row in ipairs(rows or {}) do
+            list[#list + 1] = fromRow(row, row.identifier, row.name)
+        end
+        callback(list, capped)
+    end)
 end
 
 -- Duty roster --------------------------------------------------------------
@@ -63,11 +198,13 @@ function State.GoOnDuty(source, station)
     if not identifier then return nil, 'no_identifier' end
 
     local settings = Shared.Settings()
+    local department = station and Shared.Department(station.department)
     roster[source] = {
         source = source,
         identifier = identifier,
         name = Bridge.GetName(source),
         station = station and station.id or nil,
+        department = department and department.id or nil,
         since = GetGameTimer(),
         callId = nil,
         onScene = false,
@@ -83,16 +220,20 @@ function State.GoOffDuty(source)
     return record
 end
 
-function State.Roster()
+function State.Roster(departmentId)
     local list = {}
-    for _, record in pairs(roster) do list[#list + 1] = record end
+    for _, record in pairs(roster) do
+        if not departmentId or record.department == departmentId then list[#list + 1] = record end
+    end
     table.sort(list, function(a, b) return a.since < b.since end)
     return list
 end
 
-function State.OnDutyCount()
+function State.OnDutyCount(departmentId)
     local count = 0
-    for _ in pairs(roster) do count = count + 1 end
+    for _, record in pairs(roster) do
+        if not departmentId or record.department == departmentId then count = count + 1 end
+    end
     return count
 end
 
@@ -146,10 +287,27 @@ function State.Calls()
     return calls
 end
 
-function State.ActiveCalls()
+local function isOpen(call)
+    return call.state ~= Fire.CallState.resolved and call.state ~= Fire.CallState.expired
+end
+
+-- Everything the simulation has to step, training drills included.
+function State.OpenCalls()
     local list = {}
     for _, call in pairs(calls) do
-        if call.state ~= Fire.CallState.resolved and call.state ~= Fire.CallState.expired then
+        if isOpen(call) then list[#list + 1] = call end
+    end
+    table.sort(list, function(a, b) return a.createdAt < b.createdAt end)
+    return list
+end
+
+-- The dispatch board. Academy drills belong to one trainee and never appear on
+-- it, whoever is on duty.
+function State.ActiveCalls(departmentId)
+    local list = {}
+    for _, call in pairs(calls) do
+        local open = isOpen(call) and not call.training
+        if open and (not departmentId or call.department == departmentId or call.toned[departmentId]) then
             list[#list + 1] = call
         end
     end
@@ -189,6 +347,9 @@ local function publicVictim(victim)
         state = victim.state,
         condition = Shared.Round(victim.condition, 0),
         heading = victim.heading,
+        model = victim.model,
+        wreck = victim.wreck,
+        stage = victim.stage,
         trapped = victim.state == Fire.VictimState.trapped
     }
 end
@@ -226,13 +387,18 @@ function State.PublicCall(call)
         kind = call.kind,
         label = call.label,
         location = call.location,
+        department = call.department,
         coords = Shared.Coords(call.coords),
         radius = call.radius,
         priority = call.priority,
         state = call.state,
+        source = call.source,
         createdAt = call.createdAt,
         severity = Shared.Severity(call),
         requiredCertification = call.requiredCertification,
+        extrication = call.extrication,
+        units = call.units,
+        wrecks = call.wrecks,
         owner = call.owner,
         fires = fires,
         victims = victims,
@@ -243,14 +409,33 @@ end
 
 -- Broadcasts ---------------------------------------------------------------
 
--- On-duty firefighters see dispatch traffic. `broadcastToAll` exists for
--- servers that pipe the feed into a public scanner resource.
+-- Department traffic. A call belongs to one department and is heard by its
+-- on-duty members, plus any department it has been toned out to for mutual
+-- aid. `broadcastToAll` exists for servers that pipe the feed into a public
+-- scanner resource.
 function State.Broadcast(event, ...)
     if (Shared.Settings().dispatch or {}).broadcastToAll then
         return TriggerClientEvent(Bridge.Event(event), -1, ...)
     end
     for source in pairs(roster) do
         TriggerClientEvent(Bridge.Event(event), source, ...)
+    end
+end
+
+function State.BroadcastCall(call, event, ...)
+    -- A drill is one trainee's business; nobody else hears it.
+    if call.trainee then
+        return TriggerClientEvent(Bridge.Event(event), call.trainee, ...)
+    end
+    if (Shared.Settings().dispatch or {}).broadcastToAll then
+        return TriggerClientEvent(Bridge.Event(event), -1, ...)
+    end
+
+    for source, record in pairs(roster) do
+        local hears = call.department == nil
+            or record.department == call.department
+            or (call.toned and call.toned[record.department])
+        if hears then TriggerClientEvent(Bridge.Event(event), source, ...) end
     end
 end
 
@@ -263,22 +448,25 @@ function State.SyncCall(call, target)
 
     call.dirty = false
     call.syncedState, call.syncedOwner = call.state, call.owner
-    State.Broadcast('fire:call', payload)
+    State.BroadcastCall(call, 'fire:call', payload)
 end
 
 function State.CallNeedsSync(call)
     return call.dirty == true or call.state ~= call.syncedState or call.owner ~= call.syncedOwner
 end
 
-function State.SyncRemoval(id, reason)
-    State.Broadcast('fire:callRemoved', id, reason)
+function State.SyncRemoval(call, reason)
+    State.BroadcastCall(call, 'fire:callRemoved', call.id, reason)
 end
 
 -- Sent when a firefighter clocks on, so a late joiner sees the board rather
 -- than waiting for the next incident.
 function State.SyncAll(target)
+    local record = roster[target]
     local payload = {}
-    for _, call in ipairs(State.ActiveCalls()) do payload[#payload + 1] = State.PublicCall(call) end
+    for _, call in ipairs(State.ActiveCalls(record and record.department)) do
+        payload[#payload + 1] = State.PublicCall(call)
+    end
     TriggerClientEvent(Bridge.Event('fire:sync'), target, payload)
 end
 
@@ -286,10 +474,12 @@ function State.SyncDuty(source)
     local record = roster[source]
     TriggerClientEvent(Bridge.Event('fire:duty'), source, record and {
         station = record.station,
+        department = record.department,
         since = record.since,
         callId = record.callId,
         air = record.air,
-        extinguisher = record.extinguisher
+        extinguisher = record.extinguisher,
+        hose = record.hose
     } or false)
 end
 
@@ -300,7 +490,8 @@ function State.SyncUnit(source)
         label = unit.label,
         netId = unit.netId,
         water = Shared.Round(unit.water, 0),
-        capacity = unit.capacity
+        capacity = unit.capacity,
+        supplied = unit.supplied == true
     } or false)
 end
 
@@ -323,7 +514,7 @@ end
 -- A single node changing is the most frequent update in the job, so it gets a
 -- compact event of its own rather than a whole-call resync.
 function State.SyncNode(call, node)
-    State.Broadcast('fire:node', call.id, {
+    State.BroadcastCall(call, 'fire:node', call.id, {
         id = node.id,
         intensity = Shared.Round(node.intensity, 1),
         heat = Shared.Round(node.heat, 1),
@@ -334,9 +525,25 @@ function State.SyncNode(call, node)
 end
 
 function State.SyncVictim(call, victim)
-    State.Broadcast('fire:victim', call.id, publicVictim(victim))
+    State.BroadcastCall(call, 'fire:victim', call.id, publicVictim(victim))
 end
 
 function State.SyncHazard(call, hazard)
-    State.Broadcast('fire:hazard', call.id, publicHazard(hazard))
+    State.BroadcastCall(call, 'fire:hazard', call.id, publicHazard(hazard))
 end
+
+-- Write-behind. Profiles are flushed on a timer and on resource stop so a
+-- restart mid-shift does not lose a call's worth of experience.
+CreateThread(function()
+    Bridge.AwaitReady(10000)
+    local interval = math.max(5000, tonumber((Shared.Settings().database or {}).flushInterval) or 20000)
+    while true do
+        Wait(interval)
+        if Database.Available() then State.FlushProfiles() end
+    end
+end)
+
+AddEventHandler('onResourceStop', function(resource)
+    if resource ~= Bridge.namespace then return end
+    if Database.Available() then State.FlushProfiles() end
+end)

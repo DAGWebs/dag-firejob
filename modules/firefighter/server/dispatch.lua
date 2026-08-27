@@ -1,4 +1,5 @@
--- Dispatch: where calls come from, who is on them, and when they close.
+-- Dispatch: where calls come from, which department owns them, who is on them,
+-- and when they close.
 --
 -- The simulation tick lives here too, because growth, arrival detection, and
 -- the decision to close a call are the same heartbeat.
@@ -8,6 +9,8 @@ local Fire = DAG.Fire
 local Shared = Fire.Shared
 local State = Fire.State
 local Incident = Fire.Incident
+local Departments = Fire.Departments
+local Database = Fire.Database
 local Dispatch = {}
 Fire.Dispatch = Dispatch
 
@@ -20,7 +23,8 @@ end
 -- Radio traffic. One event carries both the toast and the line a client can
 -- print into a scanner, so a server can restyle it in one place.
 local function radio(message, kind, call)
-    State.Broadcast('fire:radio', message, kind or 'inform', call and call.id or nil)
+    if call then return State.BroadcastCall(call, 'fire:radio', message, kind or 'inform', call.id) end
+    State.Broadcast('fire:radio', message, kind or 'inform', nil)
 end
 
 Dispatch.Radio = radio
@@ -33,15 +37,16 @@ local function pickLocation(callType)
     return locations[Dispatch.random(1, #locations)]
 end
 
--- A location already being worked is skipped, so two simultaneous calls never
--- land on the same building.
-local function locationIsFree(coords)
+-- An open call close to the same spot is escalated instead of duplicated, so a
+-- pile-up does not become six separate collisions on one junction.
+function Dispatch.NearbyCall(coords, distance)
+    local reach = tonumber(distance) or tonumber((Shared.Settings().events or {}).dedupeDistance) or 45.0
     for _, call in pairs(State.Calls()) do
         if call.state ~= Fire.CallState.resolved and call.state ~= Fire.CallState.expired then
-            if Shared.Distance(call.coords, coords) < 60.0 then return false end
+            if Shared.Distance(call.coords, coords) <= reach then return call end
         end
     end
-    return true
+    return nil
 end
 
 function Dispatch.Create(kind, options)
@@ -57,8 +62,13 @@ function Dispatch.Create(kind, options)
 
     local coords = Shared.Coords(options.coords or location.coords)
     if not coords then return nil, 'no_coords' end
-    if not options.force and not locationIsFree(coords) then return nil, 'location_busy' end
 
+    if not options.force then
+        local nearby = Dispatch.NearbyCall(coords, options.dedupe)
+        if nearby then return nil, 'location_busy', nearby end
+    end
+
+    local department = Shared.Department(options.department) or Shared.DepartmentForCoords(coords)
     local id, sequence = State.NextCallId()
     local call = {
         id = id,
@@ -67,10 +77,16 @@ function Dispatch.Create(kind, options)
         label = callType.label,
         location = options.label or location.label or 'Unknown location',
         coords = coords,
+        department = department and department.id or nil,
+        toned = {},
         radius = tonumber(callType.radius) or 8.0,
         priority = tonumber(callType.priority) or 2,
         state = Fire.CallState.pending,
+        source = options.source or 'ambient',
+        reportedBy = options.reportedBy,
         spread = callType.spread == true,
+        extrication = callType.extrication == true,
+        units = callType.units,
         requiredCertification = callType.requiredCertification,
         payout = tonumber(callType.payout) or 0,
         xp = tonumber(callType.xp) or 0,
@@ -87,14 +103,13 @@ function Dispatch.Create(kind, options)
     return call
 end
 
--- Weighted by priority so a working fire is more likely than an alarm, without
--- ever excluding the quieter calls entirely.
+-- Weighted by the run card, so medicals and collisions come up far more often
+-- than a working fire, the way they do on a real one.
 function Dispatch.RandomKind()
     local pool = {}
     for _, callType in ipairs(Shared.CallTypes()) do
         if #(callType.locations or {}) > 0 then
-            local weight = math.max(1, 4 - (tonumber(callType.priority) or 2))
-            for _ = 1, weight do pool[#pool + 1] = callType.id end
+            for _ = 1, Shared.CallWeight(callType) do pool[#pool + 1] = callType.id end
         end
     end
     if #pool == 0 then return nil end
@@ -110,6 +125,12 @@ function Dispatch.Join(source, callId)
     local call = State.GetCall(callId)
     if not call then return false, 'unknown_call' end
     if call.state == Fire.CallState.resolved or call.state == Fire.CallState.expired then return false, 'call_closed' end
+
+    -- Another department's call is only answerable once it has been toned out
+    -- for mutual aid.
+    if call.department and record.department ~= call.department and not (call.toned or {})[record.department] then
+        return false, 'other_department'
+    end
 
     if record.callId and record.callId ~= callId then Dispatch.Leave(source, 'reassigned') end
 
@@ -182,7 +203,6 @@ end
 
 local function escalate(call)
     call.escalations = call.escalations + 1
-    local callType = Shared.CallType(call.kind)
     local config = Shared.Settings().fire or {}
 
     if Incident.NodeCount(call) < (tonumber(config.maxNodes) or 16) then
@@ -199,9 +219,34 @@ local function escalate(call)
     call.xp = math.floor(call.xp * 1.15)
     call.escalatedAt = GetGameTimer()
 
-    radio(('%s escalating - %s at %s, still unassigned'):format(
-        call.id, (callType and callType.label or call.label), call.location), 'error', call)
+    radio(('%s escalating - %s at %s, still unassigned'):format(call.id, call.label, call.location), 'error', call)
     State.SyncCall(call)
+end
+
+Dispatch.Escalate = escalate
+
+local function logCall(call, reason, payout)
+    if not Database.Available() or (Shared.Settings().database or {}).logCalls == false then return end
+
+    local responders, lost = {}, 0
+    for identifier, responder in pairs(call.responders or {}) do
+        responders[#responders + 1] = { identifier = identifier, name = responder.name, onScene = responder.onScene }
+    end
+    for _, victim in pairs(call.victims or {}) do
+        if victim.state == Fire.VictimState.deceased then lost = lost + 1 end
+    end
+
+    local query = ([[INSERT INTO `%s`
+        (`call_ref`, `department`, `kind`, `location`, `priority`, `source`, `response_time`,
+         `duration`, `extinguished`, `rescued`, `lost`, `payout`, `responders`, `outcome`)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)]]):format(Database.Table('calls'))
+
+    Database.Execute(query, {
+        call.id, call.department, call.kind, call.location, call.priority, call.source,
+        call.responseTime, (call.resolvedAt or GetGameTimer()) - call.createdAt,
+        call.extinguished or 0, (call.rescued or 0) + (call.transported or 0), lost,
+        math.floor(payout or 0), json.encode(responders), reason
+    })
 end
 
 function Dispatch.Resolve(callId, reason)
@@ -212,7 +257,7 @@ function Dispatch.Resolve(callId, reason)
     call.state = Fire.CallState.resolved
     call.resolvedAt = GetGameTimer()
 
-    local awards = Fire.Progression.Award(call, reason)
+    local awards, paid = Fire.Progression.Award(call, reason)
 
     for identifier, responder in pairs(call.responders) do
         local record = State.Duty(responder.source)
@@ -223,7 +268,8 @@ function Dispatch.Resolve(callId, reason)
     end
 
     State.SyncCall(call)
-    State.SyncRemoval(call.id, reason or 'resolved')
+    State.SyncRemoval(call, reason or 'resolved')
+    logCall(call, reason or 'resolved', paid)
     State.RemoveCall(call.id)
 
     radio(('%s closed - %s'):format(call.id, reason or 'under control'), 'success', call)
@@ -243,7 +289,8 @@ function Dispatch.Expire(callId)
         end
     end
 
-    State.SyncRemoval(call.id, 'expired')
+    State.SyncRemoval(call, 'expired')
+    logCall(call, 'expired', 0)
     State.RemoveCall(call.id)
     radio(('%s burned out before a unit arrived'):format(call.id), 'error', call)
     return true
@@ -284,17 +331,24 @@ local function updateAttendance(call)
 end
 
 -- Apparatus positions come from the entity the server itself owns, not from a
--- client report, because the pump's position decides who can draw water.
+-- client report, because the pump's position decides who can draw water and
+-- whether the supply line is still connected.
 local function refreshUnits()
     State.EachOnDuty(function(source)
         local unit = State.Unit(source)
         if not unit or not unit.netId then return end
+
         local entity = NetworkGetEntityFromNetworkId(unit.netId)
         if not entity or entity == 0 or not DoesEntityExist(entity) then
             unit.coords = nil
             return
         end
+
         unit.coords = Shared.Coords(GetEntityCoords(entity))
+        if Incident.CheckSupply(unit) then
+            State.SyncUnit(source)
+            Bridge.Notify(source, 'The supply line pulled off the hydrant.', 'error', 4000)
+        end
     end)
 end
 
@@ -307,7 +361,7 @@ function Dispatch.Tick()
 
     refreshUnits()
 
-    for _, call in ipairs(State.ActiveCalls()) do
+    for _, call in ipairs(State.OpenCalls()) do
         local anyOnScene = updateAttendance(call)
         local responders = State.ResponderCount(call)
 
@@ -321,11 +375,22 @@ function Dispatch.Tick()
 
         assignOwner(call)
 
+        -- A department with nobody on duty cannot answer its own calls, so
+        -- after a while its neighbours are toned out to cover it.
+        if Departments.NeedsMutualAid(call, now) and Departments.ToneOut(call) then
+            call.mutualAid = true
+            call.dirty = true
+            radio(('%s requesting mutual aid at %s'):format(call.id, call.location), 'error', call)
+        end
+
         local changed = select(1, Incident.Tick(call))
         for _, node in ipairs(changed) do State.SyncNode(call, node) end
         for _, victim in ipairs(Incident.TickVictims(call)) do State.SyncVictim(call, victim) end
 
-        if Incident.IsComplete(call) and (responders > 0 or call.firstArrivalAt) then
+        if call.training then
+            -- Academy drills are scored by the academy, not closed by dispatch.
+            if State.CallNeedsSync(call) then State.SyncCall(call) end
+        elseif Incident.IsComplete(call) and (responders > 0 or call.firstArrivalAt) then
             Dispatch.Resolve(call.id, 'under control')
         elseif responders == 0 and now - call.createdAt >= (tonumber(config.expireAfter) or 1200000) then
             Dispatch.Expire(call.id)
@@ -340,22 +405,22 @@ end
 
 -- Threads ------------------------------------------------------------------
 
-local function activeCallCount()
-    return #State.ActiveCalls()
-end
-
 function Dispatch.ShouldGenerate()
-    local config = dispatchSettings()
     if not Shared.Enabled() then return false end
-    if State.OnDutyCount() < (tonumber(config.minimumOnDuty) or 1) then return false end
-    return activeCallCount() < (tonumber(config.maxActive) or 3)
+    if (Shared.Settings().events or {}).ambient and (Shared.Settings().events or {}).ambient.enabled == false then
+        return false
+    end
+
+    local onDuty = State.OnDutyCount()
+    if onDuty < (tonumber(dispatchSettings().minimumOnDuty) or 1) then return false end
+    return #State.ActiveCalls() < Shared.MaxActiveCalls(onDuty)
 end
 
 function Dispatch.GenerateOne()
     if not Dispatch.ShouldGenerate() then return nil end
     local kind = Dispatch.RandomKind()
     if not kind then return nil end
-    return Dispatch.Create(kind)
+    return Dispatch.Create(kind, { source = 'ambient' })
 end
 
 CreateThread(function()
@@ -387,7 +452,10 @@ end)
 AddEventHandler('playerDropped', function()
     local dropped = source
     if not State.IsOnDuty(dropped) then return end
+
+    local record = State.Duty(dropped)
     Dispatch.Leave(dropped, 'quiet')
     State.ClearUnit(dropped)
     State.GoOffDuty(dropped)
+    if record then State.DropCachedProfile(record.identifier) end
 end)

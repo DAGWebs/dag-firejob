@@ -30,6 +30,19 @@ function Client.Air()
     return duty and duty.air or 0
 end
 
+function Client.Department()
+    return duty and duty.department or nil
+end
+
+function Client.Station()
+    return duty and duty.station and Shared.Station(duty.station) or nil
+end
+
+-- Whether the server says this firefighter currently has a line off a pump.
+function Client.HasLine()
+    return duty ~= nil and duty.hose ~= nil
+end
+
 function Client.Extinguisher()
     return duty and duty.extinguisher or 0
 end
@@ -96,11 +109,16 @@ end
 local function refreshBlip(call)
     local callType = Shared.CallType(call.kind) or {}
     local style = callType.blip or {}
+    -- A call toned out to us from another department is drawn in that
+    -- department's colour, so mutual aid is obvious on the map.
+    local department = call.department and Shared.Department(call.department)
+    local colour = style.colour or 1
+    if department and department.id ~= Client.Department() then colour = department.colour or colour end
 
     if not blips[call.id] then
         local blip = AddBlipForCoord(call.coords.x, call.coords.y, call.coords.z)
         SetBlipSprite(blip, style.sprite or 436)
-        SetBlipColour(blip, style.colour or 1)
+        SetBlipColour(blip, colour)
         SetBlipScale(blip, 0.9)
         SetBlipAsShortRange(blip, false)
         blips[call.id] = blip

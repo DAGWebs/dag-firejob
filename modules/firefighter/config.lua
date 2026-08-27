@@ -1,8 +1,9 @@
 -- Firefighter job configuration.
 --
--- Everything the job needs to be re-themed for another server lives here:
--- stations, apparatus, incident locations, ranks, pay, and the simulation
--- tuning constants. No coordinate or balance number belongs in the modules.
+-- Everything needed to re-theme the job for another server lives here:
+-- departments, stations, apparatus, the run card, ranks, training, uniforms,
+-- pay, and the simulation tuning constants. No coordinate or balance number
+-- belongs in a module.
 --
 -- Coordinates are stock GTA V locations and are close enough to run on, but
 -- treat them as a starting point rather than as surveyed values.
@@ -12,24 +13,10 @@ local resource = GetCurrentResourceName()
 Config.Firefighter = {
     enabled = true,
 
-    -- Who may clock in. Checked with DAG.Access, so a framework job, an ACE
-    -- permission, or both can grant it. `jobs` maps a framework job name to the
-    -- minimum grade; a framework that cannot report jobs is a denial, so the
-    -- ACE entry is what makes the job usable on standalone:
-    --   add_ace group.admin <resource>.fire.duty allow
-    access = {
-        duty = {
-            jobs = { fire = 0, fireman = 0, lsfd = 0, firefighter = 0 },
-            ace = resource .. '.fire.duty'
-        },
-        -- Officers: force a dispatch, reassign, clear a call, grant training.
-        command = {
-            jobs = { fire = 3, fireman = 3, lsfd = 3, firefighter = 3 },
-            ace = resource .. '.fire.command'
-        },
-        -- Administration: spawn incidents anywhere, wipe state, award XP.
-        admin = { ace = resource .. '.fire.admin' }
-    },
+    -- Certifications gate apparatus, extrication, treatment, and containment.
+    -- Turn this off for a server that would rather let anyone do anything and
+    -- keep the ranks purely cosmetic.
+    enforceCertifications = true,
 
     -- Prefix for the commands this job registers, so two resources built from
     -- the template never fight over a name. Set to 'fd' for /fd:duty.
@@ -39,64 +26,233 @@ Config.Firefighter = {
     -- implement duty simply report it as unsupported.
     syncFrameworkDuty = true,
 
-    -- Certifications gate apparatus, extrication, treatment, and containment.
-    -- Turn this off for a server that would rather let anyone do anything and
-    -- keep the ranks purely cosmetic.
-    enforceCertifications = true,
+    -- Persistence ----------------------------------------------------------
+    -- 'auto' uses a SQL driver when one is running and falls back to the
+    -- resource-owned JSON store when none is. Import sql/firefighter.sql, or
+    -- leave `migrate` on and the tables are created on first start.
+    database = {
+        enabled = 'auto',   -- auto, true, false
+        driver = 'auto',    -- auto, oxmysql, mysql-async, ghmattimysql
+        migrate = true,
+        prefix = 'firefighter_',
+        -- Profiles are cached in memory and written behind; this is how often
+        -- dirty profiles are flushed.
+        flushInterval = 20000,
+        logCalls = true
+    },
+
+    -- Authorization -------------------------------------------------------
+    -- Duty and command are checked per department: a firefighter has to hold
+    -- that department's framework job, or the matching ACE. The ACE names are
+    -- <namespace>.<department>.<action>, so on a framework that cannot report
+    -- jobs (standalone included) this is what makes the job usable:
+    --
+    --   add_ace group.admin dag-firejob.lsfd.duty allow
+    --   add_ace group.admin dag-firejob.lsfd.command allow
+    --   add_ace group.admin dag-firejob.admin allow
+    access = {
+        aceNamespace = resource,
+        duty = { minimumGrade = 0 },
+        command = { minimumGrade = 3 },
+        admin = { ace = resource .. '.admin' }
+    },
+
+    -- Inventory -----------------------------------------------------------
+    -- 'auto' enforces items only when the active framework can actually
+    -- report an inventory, so standalone and item-less servers still work.
+    -- Item definitions for every supported framework are in install/items/.
+    items = {
+        enforce = 'auto',   -- auto, true, false
+        extinguisher = 'fire_extinguisher',
+        hose = 'fire_hose',
+        scba = 'scba_tank',
+        jaws = 'jaws_of_life',
+        halligan = 'halligan_bar',
+        medbag = 'fd_medbag',
+        thermal = 'thermal_camera',
+        hazmat = 'hazmat_kit',
+        -- Handed out at the locker when clocking on, taken back on clock-off.
+        issued = { 'fire_extinguisher', 'scba_tank', 'halligan_bar' }
+    },
+
+    -- Departments ----------------------------------------------------------
+    -- Each department owns its stations, its framework job, and its uniform.
+    -- Calls are routed to whichever department's jurisdiction they fall in;
+    -- `mutualAid` lists the departments that are toned out with it when it has
+    -- nobody on duty.
+    departments = {
+        {
+            id = 'lsfd',
+            label = 'Los Santos Fire Department',
+            short = 'LSFD',
+            job = 'lsfd',
+            stations = { 'davis', 'rockford' },
+            jurisdiction = { center = vector3(213.0, -900.0, 30.0), radius = 3400.0 },
+            mutualAid = { 'bcfd' },
+            colour = 49,
+            uniform = 'city'
+        },
+        {
+            id = 'safd',
+            label = 'San Andreas County Fire',
+            short = 'SAFD',
+            job = 'safd',
+            stations = { 'sandy' },
+            jurisdiction = { center = vector3(1900.0, 3700.0, 32.0), radius = 4200.0 },
+            mutualAid = { 'bcfd', 'lsfd' },
+            colour = 5,
+            uniform = 'county'
+        },
+        {
+            id = 'bcfd',
+            label = 'Blaine County Fire and Rescue',
+            short = 'BCFD',
+            job = 'bcfd',
+            stations = { 'paleto' },
+            jurisdiction = { center = vector3(-380.0, 6100.0, 31.0), radius = 3600.0 },
+            mutualAid = { 'safd' },
+            colour = 46,
+            uniform = 'county'
+        }
+    },
+
+    -- Anything outside every jurisdiction radius goes to the department whose
+    -- nearest station is closest.
+    fallbackDepartment = 'lsfd',
 
     stations = {
         {
             id = 'davis',
+            department = 'lsfd',
             label = 'Station 7 - Davis',
             coords = vector3(1193.54, -1473.65, 34.86),
             duty = vector3(1204.51, -1470.09, 34.86),
             locker = vector3(1197.15, -1462.66, 34.86),
             supply = vector3(1189.98, -1458.32, 34.86),
             garage = vector3(1207.51, -1444.31, 34.75),
+            office = vector3(1200.13, -1467.11, 34.86),
             spawn = { coords = vector3(1213.44, -1451.61, 34.75), heading = 180.0 },
             ret = vector3(1213.44, -1451.61, 34.75),
             blip = { sprite = 436, colour = 49, scale = 0.8 }
         },
         {
             id = 'rockford',
+            department = 'lsfd',
             label = 'Station 2 - Rockford Hills',
             coords = vector3(-627.51, -125.59, 38.75),
             duty = vector3(-618.75, -128.61, 38.75),
             locker = vector3(-625.44, -120.71, 38.75),
             supply = vector3(-632.10, -117.14, 38.75),
             garage = vector3(-611.26, -108.31, 38.20),
+            office = vector3(-622.05, -123.44, 38.75),
             spawn = { coords = vector3(-606.51, -113.42, 38.20), heading = 118.0 },
             ret = vector3(-606.51, -113.42, 38.20),
             blip = { sprite = 436, colour = 49, scale = 0.8 }
         },
         {
             id = 'sandy',
+            department = 'safd',
             label = 'Station 24 - Sandy Shores',
             coords = vector3(1691.06, 3584.41, 35.62),
             duty = vector3(1699.28, 3583.13, 35.62),
             locker = vector3(1693.71, 3589.85, 35.62),
             supply = vector3(1687.02, 3592.44, 35.62),
             garage = vector3(1684.11, 3604.83, 35.10),
+            office = vector3(1696.44, 3587.19, 35.62),
             spawn = { coords = vector3(1690.09, 3603.16, 35.10), heading = 208.0 },
             ret = vector3(1690.09, 3603.16, 35.10),
-            blip = { sprite = 436, colour = 49, scale = 0.7 }
+            blip = { sprite = 436, colour = 5, scale = 0.7 }
         },
         {
             id = 'paleto',
+            department = 'bcfd',
             label = 'Station 31 - Paleto Bay',
             coords = vector3(-379.35, 6118.53, 31.48),
             duty = vector3(-372.61, 6118.11, 31.48),
             locker = vector3(-383.29, 6122.16, 31.48),
             supply = vector3(-389.06, 6114.72, 31.48),
             garage = vector3(-364.42, 6124.55, 31.00),
+            office = vector3(-377.11, 6121.05, 31.48),
             spawn = { coords = vector3(-358.75, 6127.19, 31.00), heading = 226.0 },
             ret = vector3(-358.75, 6127.19, 31.00),
-            blip = { sprite = 436, colour = 49, scale = 0.7 }
+            blip = { sprite = 436, colour = 46, scale = 0.7 }
         }
     },
 
-    -- Apparatus available from a station garage. `certification` and `rank`
-    -- gate who may take one out; both are enforced on the server.
+    -- Uniforms -------------------------------------------------------------
+    -- Component and prop indices, applied natively so this works without any
+    -- clothing resource. `Config.Firefighter.uniforms.provider` can hand the
+    -- job over to an appearance resource instead; the civilian outfit is
+    -- always cached before a change and restored on clock-off.
+    uniforms = {
+        provider = 'auto',   -- auto, native, none
+        sets = {
+            city = {
+                male = {
+                    turnout = {
+                        components = {
+                            [3] = { 1, 0 }, [4] = { 30, 0 }, [6] = { 25, 0 },
+                            [8] = { 15, 0 }, [11] = { 51, 0 }
+                        },
+                        props = { [0] = { 124, 0 } }
+                    },
+                    station = {
+                        components = {
+                            [3] = { 0, 0 }, [4] = { 35, 0 }, [6] = { 25, 0 },
+                            [8] = { 15, 0 }, [11] = { 52, 0 }
+                        },
+                        props = {}
+                    }
+                },
+                female = {
+                    turnout = {
+                        components = {
+                            [3] = { 5, 0 }, [4] = { 36, 0 }, [6] = { 25, 0 },
+                            [8] = { 14, 0 }, [11] = { 56, 0 }
+                        },
+                        props = { [0] = { 123, 0 } }
+                    },
+                    station = {
+                        components = {
+                            [3] = { 0, 0 }, [4] = { 34, 0 }, [6] = { 25, 0 },
+                            [8] = { 14, 0 }, [11] = { 57, 0 }
+                        },
+                        props = {}
+                    }
+                }
+            },
+            county = {
+                male = {
+                    turnout = {
+                        components = {
+                            [3] = { 1, 0 }, [4] = { 30, 1 }, [6] = { 25, 0 },
+                            [8] = { 15, 0 }, [11] = { 51, 1 }
+                        },
+                        props = { [0] = { 124, 1 } }
+                    },
+                    station = {
+                        components = { [3] = { 0, 0 }, [4] = { 35, 1 }, [8] = { 15, 0 }, [11] = { 52, 1 } },
+                        props = {}
+                    }
+                },
+                female = {
+                    turnout = {
+                        components = {
+                            [3] = { 5, 0 }, [4] = { 36, 1 }, [6] = { 25, 0 },
+                            [8] = { 14, 0 }, [11] = { 56, 1 }
+                        },
+                        props = { [0] = { 123, 1 } }
+                    },
+                    station = {
+                        components = { [3] = { 0, 0 }, [4] = { 34, 1 }, [8] = { 14, 0 }, [11] = { 57, 1 } },
+                        props = {}
+                    }
+                }
+            }
+        }
+    },
+
+    -- Apparatus ------------------------------------------------------------
     apparatus = {
         {
             id = 'engine',
@@ -120,6 +276,7 @@ Config.Firefighter = {
             model = 'lguard',
             water = 900,
             certification = 'rescue',
+            carries = { 'jaws_of_life', 'halligan_bar' },
             description = 'Extrication tooling. Carries a light water supply.'
         },
         {
@@ -127,7 +284,6 @@ Config.Firefighter = {
             label = 'Brush Unit',
             model = 'sandking',
             water = 1600,
-            certification = nil,
             description = 'Off-road unit for wildland and vegetation fires.'
         },
         {
@@ -136,6 +292,7 @@ Config.Firefighter = {
             model = 'ambulance',
             water = 0,
             certification = 'ems',
+            carries = { 'fd_medbag' },
             description = 'Patient treatment and transport. No pump.'
         },
         {
@@ -148,13 +305,63 @@ Config.Firefighter = {
         }
     },
 
-    -- Incident catalogue. `locations` are candidates the dispatcher draws from;
-    -- an officer or admin can also start one anywhere.
+    -- Run card -------------------------------------------------------------
+    -- `weight` is how often the ambient dispatcher draws this type. Medicals
+    -- dominate a real run card, and they dominate this one.
     callTypes = {
+        {
+            id = 'medical',
+            label = 'Medical emergency',
+            priority = 1,
+            weight = 10,
+            blip = { sprite = 153, colour = 1 },
+            fires = { min = 0, max = 0 },
+            victims = { chance = 1.0, min = 1, max = 2 },
+            spread = false,
+            requiredCertification = 'ems',
+            payout = 450,
+            xp = 120,
+            radius = 6.0,
+            units = { 'medic' },
+            locations = {
+                { coords = vector3(-1305.44, -394.11, 36.70), label = 'Del Perro Beach boardwalk' },
+                { coords = vector3(178.05, -1005.31, 29.30), label = 'Legion Square' },
+                { coords = vector3(-262.11, -2023.44, 30.15), label = 'Chamberlain Hills' },
+                { coords = vector3(1961.05, 3741.19, 32.34), label = 'Yellow Jack Inn' },
+                { coords = vector3(-104.44, 6463.11, 31.46), label = 'Paleto Bay market' },
+                { coords = vector3(-1150.19, -1521.05, 10.63), label = 'Vespucci Beach' }
+            }
+        },
+        {
+            id = 'mva',
+            label = 'Traffic collision',
+            priority = 1,
+            weight = 8,
+            blip = { sprite = 380, colour = 47 },
+            fires = { min = 0, max = 2, intensity = { min = 25, max = 55 } },
+            victims = { chance = 1.0, min = 1, max = 3, trapped = true },
+            wrecks = { min = 1, max = 2, models = { 'sultan', 'asea', 'premier', 'bison' } },
+            spread = false,
+            requiredCertification = 'rescue',
+            extrication = true,
+            payout = 850,
+            xp = 210,
+            radius = 8.0,
+            units = { 'rescue', 'medic' },
+            locations = {
+                { coords = vector3(-1329.44, -684.11, 25.32), label = 'Del Perro off-ramp' },
+                { coords = vector3(64.31, 116.55, 79.19), label = 'Vinewood Blvd junction' },
+                { coords = vector3(2452.05, 4111.44, 38.09), label = 'Route 68 bend' },
+                { coords = vector3(96.11, 6435.31, 31.39), label = 'Great Ocean Hwy' },
+                { coords = vector3(1207.44, -1560.19, 34.68), label = 'Davis Ave and Innocence' },
+                { coords = vector3(1687.05, 4823.44, 42.01), label = 'Grapeseed crossroads' }
+            }
+        },
         {
             id = 'structure',
             label = 'Structure fire',
             priority = 1,
+            weight = 6,
             blip = { sprite = 436, colour = 1 },
             fires = { min = 4, max = 8, intensity = { min = 55, max = 90 } },
             victims = { chance = 0.65, min = 1, max = 3 },
@@ -162,6 +369,7 @@ Config.Firefighter = {
             payout = 900,
             xp = 220,
             radius = 9.0,
+            units = { 'engine', 'ladder' },
             locations = {
                 { coords = vector3(-14.35, -1441.66, 31.10), label = 'Grove Street apartments' },
                 { coords = vector3(1273.34, -1710.55, 54.77), label = 'El Burro Heights bungalow' },
@@ -175,6 +383,7 @@ Config.Firefighter = {
             id = 'vehicle',
             label = 'Vehicle fire',
             priority = 2,
+            weight = 6,
             blip = { sprite = 436, colour = 47 },
             fires = { min = 2, max = 4, intensity = { min = 40, max = 70 } },
             victims = { chance = 0.35, min = 1, max = 1 },
@@ -182,6 +391,7 @@ Config.Firefighter = {
             payout = 450,
             xp = 90,
             radius = 4.0,
+            units = { 'engine' },
             locations = {
                 { coords = vector3(-206.51, -1339.44, 30.89), label = 'Innocence Blvd' },
                 { coords = vector3(812.44, -1109.72, 26.36), label = 'Popular St underpass' },
@@ -191,9 +401,31 @@ Config.Firefighter = {
             }
         },
         {
+            id = 'alarm',
+            label = 'Automatic fire alarm',
+            priority = 3,
+            weight = 5,
+            blip = { sprite = 436, colour = 2 },
+            fires = { min = 0, max = 2, intensity = { min = 20, max = 45 } },
+            victims = { chance = 0.05, min = 1, max = 1 },
+            spread = false,
+            -- A quiet call: often nothing is burning, and it still pays a
+            -- turnout so the roster is not punished for answering it.
+            payout = 250,
+            xp = 60,
+            radius = 8.0,
+            units = { 'engine' },
+            locations = {
+                { coords = vector3(-1379.11, -476.44, 32.22), label = 'Del Perro Plaza' },
+                { coords = vector3(-717.05, -915.31, 19.21), label = 'Alta St offices' },
+                { coords = vector3(238.44, 224.11, 106.28), label = 'Mirror Park Blvd retail' }
+            }
+        },
+        {
             id = 'brush',
             label = 'Brush fire',
             priority = 3,
+            weight = 4,
             blip = { sprite = 436, colour = 46 },
             fires = { min = 5, max = 10, intensity = { min = 30, max = 60 } },
             victims = { chance = 0.1, min = 1, max = 1 },
@@ -201,6 +433,7 @@ Config.Firefighter = {
             payout = 600,
             xp = 140,
             radius = 16.0,
+            units = { 'brush' },
             locations = {
                 { coords = vector3(-1516.44, 4989.11, 62.61), label = 'Mount Chiliad slope' },
                 { coords = vector3(2216.05, 5605.73, 53.75), label = 'Grapeseed treeline' },
@@ -209,9 +442,31 @@ Config.Firefighter = {
             }
         },
         {
+            id = 'gasleak',
+            label = 'Gas leak',
+            priority = 2,
+            weight = 4,
+            blip = { sprite = 436, colour = 5 },
+            fires = { min = 0, max = 1, intensity = { min = 20, max = 35 } },
+            victims = { chance = 0.3, min = 1, max = 2 },
+            hazards = { chance = 1.0, min = 1, max = 2 },
+            spread = false,
+            requiredCertification = 'hazmat',
+            payout = 750,
+            xp = 190,
+            radius = 9.0,
+            units = { 'engine', 'rescue' },
+            locations = {
+                { coords = vector3(266.44, -1261.05, 29.29), label = 'Innocence Blvd service station' },
+                { coords = vector3(-70.31, 6420.11, 31.49), label = 'Paleto Bay gas station' },
+                { coords = vector3(1207.05, 2660.44, 37.90), label = 'Route 68 pumps' }
+            }
+        },
+        {
             id = 'industrial',
             label = 'Industrial fire',
             priority = 1,
+            weight = 3,
             blip = { sprite = 436, colour = 6 },
             fires = { min = 6, max = 11, intensity = { min = 65, max = 100 } },
             victims = { chance = 0.5, min = 1, max = 2 },
@@ -220,6 +475,7 @@ Config.Firefighter = {
             payout = 1400,
             xp = 320,
             radius = 12.0,
+            units = { 'engine', 'ladder', 'rescue' },
             locations = {
                 { coords = vector3(1201.44, -3116.55, 5.54), label = 'Elysian Island warehouse' },
                 { coords = vector3(2748.19, 1466.31, 24.50), label = 'RON refinery' },
@@ -231,6 +487,7 @@ Config.Firefighter = {
             id = 'hazmat',
             label = 'Hazardous material spill',
             priority = 1,
+            weight = 3,
             blip = { sprite = 436, colour = 5 },
             fires = { min = 0, max = 2, intensity = { min = 25, max = 45 } },
             victims = { chance = 0.45, min = 1, max = 2 },
@@ -240,6 +497,7 @@ Config.Firefighter = {
             payout = 1200,
             xp = 280,
             radius = 10.0,
+            units = { 'rescue', 'battalion' },
             locations = {
                 { coords = vector3(2678.44, 1671.05, 24.50), label = 'RON tanker rollover' },
                 { coords = vector3(-1076.31, -1265.44, 5.55), label = 'Vespucci canals outfall' },
@@ -247,68 +505,120 @@ Config.Firefighter = {
             }
         },
         {
-            id = 'rescue',
-            label = 'Vehicle extrication',
-            priority = 2,
-            blip = { sprite = 436, colour = 3 },
-            fires = { min = 0, max = 1, intensity = { min = 20, max = 40 } },
-            victims = { chance = 1.0, min = 1, max = 3, trapped = true },
+            id = 'elevator',
+            label = 'Elevator rescue',
+            priority = 3,
+            weight = 3,
+            blip = { sprite = 380, colour = 3 },
+            fires = { min = 0, max = 0 },
+            victims = { chance = 1.0, min = 1, max = 2, trapped = true },
             spread = false,
             requiredCertification = 'rescue',
-            payout = 800,
-            xp = 200,
-            radius = 6.0,
+            payout = 500,
+            xp = 130,
+            radius = 5.0,
+            units = { 'rescue' },
             locations = {
-                { coords = vector3(-1329.44, -684.11, 25.32), label = 'Del Perro off-ramp' },
-                { coords = vector3(64.31, 116.55, 79.19), label = 'Vinewood Blvd junction' },
-                { coords = vector3(2452.05, 4111.44, 38.09), label = 'Route 68 bend' },
-                { coords = vector3(96.11, 6435.31, 31.39), label = 'Great Ocean Hwy' }
+                { coords = vector3(-75.11, -826.44, 243.38), label = 'Maze Bank Tower' },
+                { coords = vector3(-141.05, -620.31, 168.82), label = 'Arcadius Business Centre' },
+                { coords = vector3(1204.44, -3115.05, 5.54), label = 'Dock warehouse lift' }
             }
         },
         {
-            id = 'alarm',
-            label = 'Automatic fire alarm',
-            priority = 3,
-            blip = { sprite = 436, colour = 2 },
-            fires = { min = 0, max = 2, intensity = { min = 20, max = 45 } },
-            victims = { chance = 0.05, min = 1, max = 1 },
+            id = 'water',
+            label = 'Water rescue',
+            priority = 1,
+            weight = 2,
+            blip = { sprite = 404, colour = 3 },
+            fires = { min = 0, max = 0 },
+            victims = { chance = 1.0, min = 1, max = 2 },
             spread = false,
-            -- A quiet call: often nothing is burning, and it still pays a
-            -- turnout so the roster is not punished for answering it.
-            payout = 250,
-            xp = 60,
-            radius = 8.0,
+            requiredCertification = 'rescue',
+            payout = 950,
+            xp = 240,
+            radius = 12.0,
+            units = { 'rescue', 'medic' },
             locations = {
-                { coords = vector3(-1379.11, -476.44, 32.22), label = 'Del Perro Plaza' },
-                { coords = vector3(-717.05, -915.31, 19.21), label = 'Alta St offices' },
-                { coords = vector3(238.44, 224.11, 106.28), label = 'Mirror Park Blvd retail' }
+                { coords = vector3(-1850.44, -1245.11, 8.61), label = 'Del Perro Pier' },
+                { coords = vector3(-1024.05, -1387.31, 5.03), label = 'Vespucci Beach surf' },
+                { coords = vector3(1310.44, 4225.05, 33.91), label = 'Alamo Sea shore' }
+            }
+        },
+        {
+            id = 'wires',
+            label = 'Wires down',
+            priority = 2,
+            weight = 2,
+            blip = { sprite = 436, colour = 5 },
+            fires = { min = 1, max = 2, intensity = { min = 20, max = 40 } },
+            victims = { chance = 0.15, min = 1, max = 1 },
+            hazards = { chance = 1.0, min = 1, max = 1 },
+            spread = false,
+            payout = 500,
+            xp = 120,
+            radius = 7.0,
+            units = { 'engine' },
+            locations = {
+                { coords = vector3(2337.05, 2571.44, 46.68), label = 'Route 68 power line' },
+                { coords = vector3(-576.31, 5324.11, 70.22), label = 'Mount Chiliad pylon' },
+                { coords = vector3(1109.44, -570.05, 56.72), label = 'Mirror Park transformer' }
             }
         }
     },
 
+    -- Incident sources -----------------------------------------------------
+    -- The ambient dispatcher keeps the department busy with NPC incidents when
+    -- nothing player-driven is happening. The rest turn what players actually
+    -- do into calls, so a fire on a player's car is the same call as one the
+    -- dispatcher invented.
+    events = {
+        -- Ambient NPC incidents.
+        ambient = { enabled = true },
+        -- A player vehicle that catches fire is dispatched as a vehicle fire.
+        vehicleFire = { enabled = true, kind = 'vehicle' },
+        -- A heavy collision is dispatched as a traffic collision.
+        collision = { enabled = true, kind = 'mva', minimumSpeed = 22.0, minimumDamage = 240.0 },
+        -- Off by default: most servers already run an EMS job that owns this.
+        playerDown = { enabled = false, kind = 'medical' },
+        -- Any player can report an incident at their position.
+        report = { enabled = true, kinds = { 'structure', 'vehicle', 'medical', 'mva', 'brush' } },
+        -- A new call is not created within this distance of an open one; the
+        -- open call is escalated instead.
+        dedupeDistance = 45.0,
+        -- Per player, across every automatic source.
+        cooldown = 90000
+    },
+
     dispatch = {
-        -- Nobody on duty means no generated calls; the city does not burn for
-        -- an empty roster.
+        -- Nobody on duty means no ambient calls; the city does not burn for an
+        -- empty roster. Player-caused incidents are still dispatched and wait
+        -- on the board.
         minimumOnDuty = 1,
-        maxActive = 3,
+        -- Concurrent open calls: this many, plus one per on-duty firefighter,
+        -- up to the ceiling.
+        maxActive = 2,
+        perFirefighter = 1,
+        maxActiveCeiling = 8,
         interval = { min = 180000, max = 420000 },
         -- An unanswered call gets worse before it gives up.
         escalateAfter = 240000,
         expireAfter = 1200000,
-        -- How close a responder must be for the call to count as worked, and
+        -- How close a responder has to be for the call to count as worked, and
         -- for water/rescue actions to be accepted at all.
         onSceneDistance = 90.0,
         actionDistance = 12.0,
         -- Response bonus window, measured from dispatch to first arrival.
         responseWindow = 180000,
-        broadcastToAll = false
+        -- Tone a call out to the whole city rather than one department.
+        broadcastToAll = false,
+        -- Bring in mutual aid when the owning department has nobody on duty.
+        mutualAidAfter = 120000
     },
 
     fire = {
         tickInterval = 2000,
         -- Intensity a burning node gains per tick when nobody is on it.
         growth = 2.5,
-        -- Growth only applies while the node is below this ceiling.
         maxIntensity = 100,
         spreadThreshold = 70,
         spreadChance = 0.16,
@@ -321,13 +631,12 @@ Config.Firefighter = {
         -- Litres of water per point of intensity removed, before the agent
         -- multiplier below.
         litresPerPoint = 2.2,
-        -- Applied per water report; the client sends one report per tick.
         reportInterval = 400,
         maxLitresPerReport = 90,
         agents = {
-            hose = { multiplier = 1.0, range = 14.0, flow = 65 },
-            extinguisher = { multiplier = 0.55, range = 6.0, flow = 18 },
-            monitor = { multiplier = 1.6, range = 22.0, flow = 120 }
+            hose = { multiplier = 1.0, range = 14.0, flow = 65, item = 'fire_hose', needsLine = true },
+            extinguisher = { multiplier = 0.55, range = 6.0, flow = 18, item = 'fire_extinguisher' },
+            monitor = { multiplier = 1.6, range = 22.0, flow = 120, needsApparatus = true }
         },
         heat = {
             radius = 5.0,
@@ -335,6 +644,34 @@ Config.Firefighter = {
             interval = 1500,
             -- Turnout gear and a charged SCBA cut incoming heat damage.
             gearMultiplier = 0.3
+        }
+    },
+
+    -- Hose lines -----------------------------------------------------------
+    -- A supply line runs hydrant to pump; an attack line runs pump to
+    -- firefighter and is laid as props as they walk it out. Past
+    -- `attackLength` from the pump the line is stretched and the nozzle stops.
+    hose = {
+        prop = 'prop_fire_hose',
+        segment = 3.5,
+        attackLength = 38.0,
+        deployTime = 4000,
+        -- A supply line makes the pump draw from the hydrant instead of the
+        -- tank, so the tank stops going down.
+        supplyLength = 14.0,
+        supplyDeployTime = 6000
+    },
+
+    -- Extrication ----------------------------------------------------------
+    -- Worked in order against the wreck the patient is trapped in. A stage
+    -- that names an item needs that item in hand.
+    extrication = {
+        stages = {
+            { id = 'stabilise', label = 'Stabilise the vehicle', time = 6000 },
+            { id = 'glass', label = 'Take the glass out', time = 5000, item = 'halligan_bar' },
+            { id = 'door', label = 'Force the door with the jaws', time = 9000, item = 'jaws_of_life' },
+            { id = 'roof', label = 'Cut the roof away', time = 11000, item = 'jaws_of_life' },
+            { id = 'remove', label = 'Remove the patient', time = 7000 }
         }
     },
 
@@ -347,8 +684,6 @@ Config.Firefighter = {
     },
 
     water = {
-        -- Hydrant supply is effectively unlimited, but the truck still has to
-        -- be parked next to one for the pump to draw.
         hydrantModels = {
             'prop_fire_hydrant_1',
             'prop_fire_hydrant_2',
@@ -359,13 +694,11 @@ Config.Firefighter = {
         -- How far the pump panel reaches from the apparatus.
         apparatusDistance = 8.0,
         refillRate = 400,
-        -- Backpack extinguisher capacity for a firefighter working away from
-        -- an apparatus.
         extinguisherCapacity = 220
     },
 
     victims = {
-        -- Milliseconds of work to free a trapped victim and to treat one.
+        -- Milliseconds of work to free a trapped patient and to treat one.
         extricationTime = 12000,
         treatmentTime = 8000,
         -- Condition lost per simulation tick while a patient waits, scaled by
@@ -373,23 +706,27 @@ Config.Firefighter = {
         -- turnout still pays, the rescue bonus does not.
         deterioration = { trapped = 3.0, freed = 1.5 },
         hospital = vector3(298.68, -584.44, 43.26),
-        model = 'a_m_y_business_01'
+        models = { 'a_m_y_business_01', 'a_f_y_tourist_01', 'a_m_m_farmer_01', 'a_f_m_soucent_01' }
     },
 
     hazards = {
-        containmentTime = 15000
+        containmentTime = 15000,
+        item = 'hazmat_kit'
     },
 
+    -- Ranks ----------------------------------------------------------------
+    -- `grade` is the framework job grade set when a firefighter is promoted to
+    -- this rank, so it has to match the grades in your framework's job
+    -- definition (install/jobs/).
     ranks = {
-        { id = 'probationary', label = 'Probationary', xp = 0, pay = 0.85, certifications = {} },
-        { id = 'firefighter', label = 'Firefighter', xp = 750, pay = 1.0, certifications = { 'engine' } },
-        { id = 'engineer', label = 'Engineer', xp = 2500, pay = 1.15, certifications = { 'ladder', 'ems' } },
-        { id = 'lieutenant', label = 'Lieutenant', xp = 6000, pay = 1.3, certifications = { 'rescue' } },
-        { id = 'captain', label = 'Captain', xp = 12000, pay = 1.5, certifications = { 'hazmat' } },
-        { id = 'chief', label = 'Battalion Chief', xp = 25000, pay = 1.75, certifications = { 'command' } }
+        { id = 'probationary', label = 'Probationary', grade = 0, xp = 0, pay = 0.85, certifications = {} },
+        { id = 'firefighter', label = 'Firefighter', grade = 1, xp = 750, pay = 1.0, certifications = { 'engine' } },
+        { id = 'engineer', label = 'Engineer', grade = 2, xp = 2500, pay = 1.15, certifications = { 'ladder' } },
+        { id = 'lieutenant', label = 'Lieutenant', grade = 3, xp = 6000, pay = 1.3, certifications = {} },
+        { id = 'captain', label = 'Captain', grade = 4, xp = 12000, pay = 1.5, certifications = {} },
+        { id = 'chief', label = 'Battalion Chief', grade = 5, xp = 25000, pay = 1.75, certifications = { 'command' } }
     },
 
-    -- Training an officer can sign off before the rank would grant it.
     certifications = {
         { id = 'engine', label = 'Pump operator', description = 'Drive and operate an engine.' },
         { id = 'ladder', label = 'Aerial operations', description = 'Operate the aerial ladder.' },
@@ -397,6 +734,83 @@ Config.Firefighter = {
         { id = 'rescue', label = 'Technical rescue', description = 'Extrication and confined space.' },
         { id = 'hazmat', label = 'Hazardous materials', description = 'Contain chemical releases.' },
         { id = 'command', label = 'Incident command', description = 'Run the dispatch board.' }
+    },
+
+    -- Academy --------------------------------------------------------------
+    -- Every certification can be earned by training rather than waiting for a
+    -- rank, or signed off by an officer. A course is a classroom phase and,
+    -- where it makes sense, a practical drill on a live training scene.
+    academy = {
+        enabled = true,
+        label = 'San Andreas Fire Academy',
+        coords = vector3(1183.44, -1463.11, 34.86),
+        classroom = vector3(1188.05, -1466.31, 34.86),
+        drill = vector3(1176.31, -1442.05, 34.86),
+        blip = { sprite = 175, colour = 49, scale = 0.7 },
+        -- How long a failed course locks the trainee out.
+        retryDelay = 300000,
+        courses = {
+            {
+                id = 'engine',
+                certification = 'engine',
+                label = 'Pump operations',
+                description = 'Draft, charge a line, and put water on a training fire.',
+                classroom = 30000,
+                cost = 0,
+                practical = { kind = 'suppression', targets = 3, timeLimit = 240000 }
+            },
+            {
+                id = 'ems',
+                certification = 'ems',
+                label = 'Emergency medical technician',
+                description = 'Assess and treat two patients inside the time limit.',
+                classroom = 45000,
+                cost = 250,
+                practical = { kind = 'treatment', targets = 2, timeLimit = 240000 }
+            },
+            {
+                id = 'ladder',
+                certification = 'ladder',
+                label = 'Aerial operations',
+                description = 'Set up and work from the aerial platform.',
+                classroom = 40000,
+                cost = 250,
+                requires = { 'engine' },
+                practical = { kind = 'suppression', targets = 2, timeLimit = 180000 }
+            },
+            {
+                id = 'rescue',
+                certification = 'rescue',
+                label = 'Technical rescue',
+                description = 'Work a wreck from stabilisation to patient removal.',
+                classroom = 45000,
+                cost = 500,
+                requires = { 'ems' },
+                minimumRank = 1,
+                practical = { kind = 'extrication', targets = 1, timeLimit = 300000 }
+            },
+            {
+                id = 'hazmat',
+                certification = 'hazmat',
+                label = 'Hazardous materials technician',
+                description = 'Identify and contain a chemical release.',
+                classroom = 60000,
+                cost = 500,
+                requires = { 'engine' },
+                minimumRank = 2,
+                practical = { kind = 'containment', targets = 2, timeLimit = 240000 }
+            },
+            {
+                id = 'command',
+                certification = 'command',
+                label = 'Incident command',
+                description = 'Run a board, assign units, and close out a call.',
+                classroom = 90000,
+                cost = 1000,
+                requires = { 'engine', 'ems' },
+                minimumRank = 3
+            }
+        }
     },
 
     pay = {
@@ -409,14 +823,12 @@ Config.Firefighter = {
         perVictim = 300,
         perHazard = 250,
         responseBonus = 200,
-        -- Multiplied into the payout when the call is resolved with every
-        -- victim alive.
         cleanSceneBonus = 1.15
     },
 
     hud = {
         enabled = true,
         x = 0.015,
-        y = 0.72
+        y = 0.70
     }
 }
