@@ -23,6 +23,7 @@ client_scripts {
     'modules/firefighter/client/editor.lua',
     'modules/firefighter/client/state.lua',
     'modules/firefighter/client/fire.lua',
+    'modules/firefighter/client/effects.lua',
     'modules/firefighter/client/hose.lua',
     'modules/firefighter/client/rescue.lua',
     'modules/firefighter/client/uniform.lua',

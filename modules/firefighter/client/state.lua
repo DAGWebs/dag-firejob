@@ -161,9 +161,18 @@ end
 Client.StoreCall = storeCall
 
 local function dropCall(id, reason)
+    -- What was there goes out with the removal: anything that wants to leave a
+    -- mark where the call was cannot look it up afterwards.
+    local call = calls[id]
     calls[id] = nil
     removeBlip(id)
-    changed('removed', { id = id, reason = reason })
+    changed('removed', {
+        id = id,
+        reason = reason,
+        kind = call and call.kind or nil,
+        coords = call and call.coords or nil,
+        severity = call and call.severity or nil
+    })
 end
 
 Client.DropCall = dropCall

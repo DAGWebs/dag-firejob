@@ -6,6 +6,7 @@ local CLIENT_FILES = {
     'modules/firefighter/client/editor.lua',
     'modules/firefighter/client/state.lua',
     'modules/firefighter/client/fire.lua',
+    'modules/firefighter/client/effects.lua',
     'modules/firefighter/client/hose.lua',
     'modules/firefighter/client/rescue.lua',
     'modules/firefighter/client/uniform.lua',
@@ -396,16 +397,23 @@ end)
 
 -- Air and heat ---------------------------------------------------------------
 
-test('air burns faster inside the smoke than outside it', function()
+-- The gauge and what you can see are the same number: thicker smoke costs
+-- more air, so managing one is managing the other.
+test('air burns faster the thicker the smoke is', function()
     loadClient()
     goOnDuty()
 
     harness.playerCoords = vector3(500.0, 0.0, 0.0)
-    assertEq(DAG.Fire.Suppression.AirStep(), 1)
+    assertEq(DAG.Fire.Suppression.AirStep(), 1, 'clear air')
 
     fire('fire:sync', { callPayload() })
     harness.playerCoords = vector3(2.0, 0.0, 0.0)
-    assertEq(DAG.Fire.Suppression.AirStep(), 4)
+    assertEq(DAG.Fire.Suppression.AirStep(), 4, 'standing in it')
+
+    -- On the edge of the smoke rather than in the middle of it.
+    harness.playerCoords = vector3(2.0, 7.0, 0.0)
+    local edge = DAG.Fire.Suppression.AirStep()
+    assertTrue(edge > 1 and edge < 4, 'somewhere in between')
 end)
 
 test('spent air is reported to the server in batches, not every tick', function()
@@ -522,6 +530,145 @@ test('an action that runs its full time reports completion', function()
     assertEq(DAG.Fire.Rescue.ActionStep(), 'complete')
     assertEq(harness.serverEvents[#harness.serverEvents].event, DAG.Framework.Event('fire:completeAction'))
     assertNil(DAG.Fire.Rescue.ActionStep(), 'and it only fires once')
+end)
+
+-- The sensory layer ---------------------------------------------------------------
+
+test('smoke thickens towards the fire and clears away from it', function()
+    loadClient()
+    fire('fire:sync', { callPayload() })
+
+    local Effects = DAG.Fire.Effects
+    assertEq(Effects.SmokeAt({ x = 500.0, y = 0.0, z = 0.0 }), 0)
+    assertTrue(Effects.SmokeAt({ x = 2.0, y = 0.0, z = 0.0 }) > Effects.SmokeAt({ x = 2.0, y = 6.0, z = 0.0 }))
+    assertTrue(Effects.SmokeAt({ x = 2.0, y = 0.0, z = 0.0 }) <= 1.0, 'and it never exceeds one')
+end)
+
+-- The first request only kicks the load, which is why the second call is the
+-- one that draws: an effect that is not ready is skipped, not errored.
+test('a particle asset that has not streamed in yet is skipped', function()
+    loadClient()
+    goOnDuty()
+    harness.ptfxLoaded = false
+    fire('fire:sync', { callPayload() })
+
+    harness.playerCoords = vector3(0.0, 0.0, 0.0)
+    assertEq(DAG.Fire.Effects.SmokeStep(), 0, 'nothing drawn yet')
+    assertEq(#harness.particles, 0)
+
+    harness.ptfxLoaded = true
+    assertTrue(DAG.Fire.Effects.SmokeStep() > 0)
+    assertTrue(#harness.particles > 0)
+end)
+
+-- A fire big enough to matter puts up a column the rest of the city can see,
+-- and takes it down with it when the call closes.
+test('a working fire raises a smoke column and drops it when it closes', function()
+    loadClient()
+    goOnDuty()
+    harness.playerCoords = vector3(0.0, 0.0, 0.0)
+    fire('fire:sync', { callPayload({ severity = 0.9 }) })
+
+    DAG.Fire.Effects.SmokeStep()
+    local column
+    for _, entry in ipairs(harness.particles) do
+        if entry.looped then column = entry end
+    end
+    assertTrue(column ~= nil, 'the column is a looped effect')
+
+    fire('fire:callRemoved', 'FD-0001', 'resolved')
+    DAG.Fire.Effects.SmokeStep()
+    for _, entry in ipairs(harness.particles) do
+        assertFalse(entry.looped, 'and it was stopped')
+    end
+end)
+
+test('a quiet call raises no column at all', function()
+    loadClient()
+    goOnDuty()
+    harness.playerCoords = vector3(0.0, 0.0, 0.0)
+    fire('fire:sync', { callPayload({ severity = 0.1 }) })
+
+    DAG.Fire.Effects.SmokeStep()
+    for _, entry in ipairs(harness.particles) do
+        assertFalse(entry.looped)
+    end
+end)
+
+test('the water stream is drawn from the nozzle to what the server was told', function()
+    loadClient()
+    goOnDuty()
+    withLine()
+    fire('fire:sync', { callPayload() })
+    harness.playerCoords = vector3(0.0, 0.0, 0.0)
+
+    DAG.Fire.Suppression.Equip('hose')
+    harness.pedShooting = true
+    harness.gameTimer = 5000
+    local node = DAG.Fire.Suppression.SprayStep()
+
+    assertEq(node.id, 'n1')
+    local along = 0
+    for _, entry in ipairs(harness.particles) do
+        if entry.coords.x > 0.0 and entry.coords.x <= 2.0 then along = along + 1 end
+    end
+    assertTrue(along >= 2, 'a line of it, not two puffs')
+end)
+
+-- Vision has an order to it: running out of air beats everything, the camera
+-- beats smoke, and smoke beats heat. That order is the whole reason to carry
+-- the camera.
+test('what you can see follows what is happening to you', function()
+    loadClient()
+    goOnDuty()
+    fire('fire:sync', { callPayload() })
+
+    harness.playerCoords = vector3(500.0, 0.0, 0.0)
+    assertNil(DAG.Fire.Effects.VisionStep(), 'clear')
+
+    harness.playerCoords = vector3(2.0, 0.0, 0.0)
+    assertEq(DAG.Fire.Effects.VisionStep(), 'smoke')
+    assertEq(harness.timecycle, 'smoke_flare')
+
+    DAG.Fire.Suppression.ToggleThermal()
+    assertEq(DAG.Fire.Effects.VisionStep(), 'thermal', 'the camera cuts through it')
+    assertNil(harness.timecycle)
+    DAG.Fire.Suppression.ToggleThermal()
+
+    fire('fire:duty', { station = 'davis', department = 'lsfd', since = 0, air = 50 })
+    assertEq(DAG.Fire.Effects.VisionStep(), 'air', 'and running out beats all of it')
+end)
+
+test('breathing gets faster as the cylinder empties', function()
+    loadClient()
+    goOnDuty()
+    fire('fire:sync', { callPayload() })
+    harness.playerCoords = vector3(2.0, 0.0, 0.0)
+    harness.gameTimer = 100000
+
+    assertEq(DAG.Fire.Effects.AudioStep(), 'breathing')
+    local full = #harness.sounds
+
+    -- A nearly empty cylinder breathes sooner and brings a heartbeat with it.
+    fire('fire:duty', { station = 'davis', department = 'lsfd', since = 0, air = 100 })
+    harness.gameTimer = harness.gameTimer + 1200
+    DAG.Fire.Effects.AudioStep()
+    assertTrue(#harness.sounds > full)
+end)
+
+test('a building that burned is still smoking later', function()
+    loadClient()
+    goOnDuty()
+    harness.playerCoords = vector3(0.0, 0.0, 0.0)
+    fire('fire:sync', { callPayload() })
+    fire('fire:callRemoved', 'FD-0001', 'resolved')
+
+    assertEq(#DAG.Fire.Effects.Aftermath(), 1)
+    assertTrue(DAG.Fire.Effects.AftermathStep() > 0)
+
+    harness.gameTimer = harness.gameTimer + 1000000
+    assertEq(DAG.Fire.Effects.AftermathStep(), 0)
+    assertEq(#DAG.Fire.Effects.Aftermath(), 0, 'and it stops being remembered')
 end)
 
 -- Live configuration -----------------------------------------------------------

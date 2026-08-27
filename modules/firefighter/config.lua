@@ -965,6 +965,167 @@ Config.Firefighter = {
         pageSize = 10
     },
 
+    -- Effects ----------------------------------------------------------------
+    -- Particle, sound and screen effect names, all overridable: a server with
+    -- a custom particle dictionary retargets it here rather than in code, and
+    -- anything that fails to load is skipped rather than erroring.
+    effects = {
+        enabled = true,
+        water = {
+            asset = 'core',
+            stream = 'ent_sht_water',
+            steam = 'ent_amb_steam_ground',
+            scale = 1.6
+        },
+        smoke = {
+            asset = 'core',
+            effect = 'ent_amb_smoke_foundry',
+            -- The column a working fire puts up, visible from across the map.
+            column = 'ent_ray_paleto_gate_smoke',
+            columnAt = 0.45,        -- severity the column appears at
+            columnScale = 6.0,
+            scale = 2.5,
+            -- How far into the smoke before it starts blinding.
+            radius = 9.0,
+            timecycle = 'smoke_flare',
+            strength = 0.85
+        },
+        heat = { timecycle = 'heatwave', radius = 7.0 },
+        -- Vision closing in as the cylinder empties, so the gauge is felt and
+        -- not just read.
+        air = {
+            warnAt = 0.25,
+            criticalAt = 0.1,
+            timecycle = 'Dying01',
+            breathing = { audioRef = 'SCUBA_SOUNDS', audioName = 'Breathing_Loop', interval = 3200 },
+            heartbeat = { audioRef = 'MP_MISSION_COUNTDOWN_SOUNDSET', audioName = 'Woosh', interval = 900 }
+        },
+        sound = {
+            enabled = true,
+            fire = { audioRef = 'DLC_HEIST_HACKING_SNAKE_SOUNDS', audioName = 'Beep', interval = 4000 },
+            dispatch = { audioRef = 'HUD_FRONTEND_DEFAULT_SOUNDSET', audioName = 'CHECKPOINT_PERFECT' },
+            mayday = { audioRef = 'HUD_FRONTEND_DEFAULT_SOUNDSET', audioName = 'CHECKPOINT_MISSED' }
+        },
+        -- Scorch and smoke left behind after a structure fire closes.
+        aftermath = {
+            enabled = true,
+            duration = 900000,
+            effect = 'ent_amb_smoke_foundry',
+            scale = 1.2
+        }
+    },
+
+    -- Crew ---------------------------------------------------------------------
+    -- Work goes faster the more hands are on it, always. Hard requirements are
+    -- opt-in, because a two-firefighter server should still be able to play.
+    crew = {
+        enabled = true,
+        -- Every extra pair of hands on the same job takes this much off the
+        -- clock, down to the floor.
+        assistBonus = 0.25,
+        assistFloor = 0.5,
+        -- Turn on to make the listed jobs actually need a second firefighter.
+        enforce = false,
+        requiresTwo = { 'roof', 'ladder', 'supply' },
+        roles = {
+            { id = 'command', label = 'Incident command', exclusive = true, certification = 'command' },
+            { id = 'nozzle', label = 'Nozzle', exclusive = false },
+            { id = 'backup', label = 'Backup line', exclusive = false },
+            { id = 'pump', label = 'Pump operator', exclusive = true, certification = 'engine' },
+            { id = 'search', label = 'Search and rescue', exclusive = false },
+            { id = 'medic', label = 'Patient care', exclusive = false, certification = 'ems' }
+        },
+        -- Personnel accountability: command calls it, everybody answers.
+        par = { window = 30000, cooldown = 60000 }
+    },
+
+    -- Mayday --------------------------------------------------------------------
+    mayday = {
+        enabled = true,
+        -- A firefighter this hurt, or out of air in smoke, goes down.
+        healthAt = 120,
+        -- How long somebody has to reach them.
+        window = 120000,
+        -- Dragging them out.
+        dragTime = 6000,
+        dragDistance = 2.5,
+        -- What reaching them in time is worth.
+        reward = { pay = 750, xp = 200 }
+    },
+
+    -- Reading the fire -----------------------------------------------------------
+    -- Both of these warn before they happen, and both are avoidable: knock the
+    -- fire down, or get out.
+    hazardEvents = {
+        flashover = {
+            enabled = true,
+            kinds = { structure = true, industrial = true },
+            -- Average node intensity the risk starts building at.
+            threshold = 75,
+            buildPerTick = 4,
+            warnAt = 60,
+            radius = 9.0,
+            damage = 120
+        },
+        collapse = {
+            enabled = true,
+            kinds = { structure = true, industrial = true },
+            -- How long a structure has to burn unchecked first.
+            after = 420000,
+            warning = 15000,
+            radius = 12.0,
+            damage = 150
+        }
+    },
+
+    -- Triage ---------------------------------------------------------------------
+    -- Working the worst patient first is what the bonus pays for.
+    triage = {
+        enabled = true,
+        immediate = 35,   -- condition at or below this is red
+        delayed = 65,     -- ...and below this is yellow
+        orderBonus = 250,
+        orderXp = 60
+    },
+
+    -- Skill --------------------------------------------------------------------
+    -- A timed job can be finished early by working it well. The server still
+    -- refuses anything faster than `floor` of the full time, so the best a
+    -- client can do by lying is the same as the best a good player can do.
+    skill = {
+        enabled = true,
+        floor = 0.55,
+        provider = 'auto',   -- auto, ox_lib, bundled, none
+        window = 0.28,       -- how wide the target zone is
+        speed = 1.15,
+        -- What finishing fast is worth, at most.
+        bonus = { pay = 120, xp = 25 }
+    },
+
+    -- Station life ----------------------------------------------------------------
+    -- The job is mostly waiting. These are what to do while waiting.
+    chores = {
+        enabled = true,
+        cooldown = 1800000,
+        list = {
+            { id = 'apparatus', label = 'Apparatus check', point = 'garage', time = 12000, pay = 200, xp = 25 },
+            { id = 'hose', label = 'Hose test', point = 'supply', time = 15000, pay = 250, xp = 30 },
+            { id = 'inventory', label = 'Equipment inventory', point = 'locker', time = 10000, pay = 150, xp = 20 },
+            { id = 'housework', label = 'Clean the station', point = 'office', time = 18000, pay = 175, xp = 20 }
+        }
+    },
+
+    -- Scanner -----------------------------------------------------------------------
+    -- Other services listening in. The event carries the call, and any resource
+    -- can subscribe to it; naming one here also pushes it straight there.
+    scanner = {
+        enabled = true,
+        -- Calls at or above this priority are put out on the wire.
+        priority = 2,
+        -- An event another dispatch resource listens on, or false for none.
+        event = false
+    },
+
     hud = {
         enabled = true,
         x = 0.015,

@@ -65,6 +65,12 @@ function harness.reset()
     harness.modelsLoaded = true
     harness.animDictsLoaded = true
     harness.ptfxLoaded = true
+    harness.particles = {}
+    harness.nextParticle = 0
+    harness.sounds = {}
+    harness.timecycle = nil
+    harness.timecycleStrength = nil
+    harness.lastPtfxAsset = nil
     -- Ped appearance, vehicle state, and the world signals the firefighter
     -- job's incident detectors read.
     harness.pedOutfit = { components = {}, props = {} }
@@ -385,8 +391,32 @@ function _G.RequestAnimDict() end
 function _G.HasAnimDictLoaded() return harness.animDictsLoaded == true end
 function _G.RequestNamedPtfxAsset() end
 function _G.HasNamedPtfxAssetLoaded() return harness.ptfxLoaded == true end
-function _G.UseParticleFxAssetNextCall() end
-function _G.StartParticleFxNonLoopedAtCoord() end
+function _G.UseParticleFxAssetNextCall(asset) harness.lastPtfxAsset = asset end
+function _G.StartParticleFxNonLoopedAtCoord(effect, x, y, z, _, _, _, scale)
+    table.insert(harness.particles, { effect = effect, coords = vector3(x, y, z), scale = scale, looped = false })
+end
+function _G.StartParticleFxLoopedAtCoord(effect, x, y, z, _, _, _, scale)
+    harness.nextParticle = harness.nextParticle + 1
+    table.insert(harness.particles, {
+        effect = effect, coords = vector3(x, y, z), scale = scale, looped = true, handle = harness.nextParticle
+    })
+    return harness.nextParticle
+end
+function _G.StopParticleFxLooped(handle)
+    for index, entry in ipairs(harness.particles) do
+        if entry.handle == handle then table.remove(harness.particles, index) return end
+    end
+end
+function _G.SetTimecycleModifier(name) harness.timecycle = name end
+function _G.SetTimecycleModifierStrength(strength) harness.timecycleStrength = strength end
+function _G.ClearTimecycleModifier() harness.timecycle = nil end
+function _G.PlaySoundFrontend(_, name, ref)
+    table.insert(harness.sounds, { name = name, ref = ref })
+end
+function _G.PlaySoundFromCoord(_, name, x, y, z, ref)
+    table.insert(harness.sounds, { name = name, ref = ref, coords = vector3(x, y, z) })
+end
+function _G.GetPedBoneCoords() return harness.playerCoords or vector3(0.0, 0.0, 0.0) end
 
 function _G.NetworkGetEntityFromNetworkId(netId) return harness.netIds[netId] or 0 end
 function _G.NetworkGetNetworkIdFromEntity(entity)

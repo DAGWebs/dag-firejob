@@ -200,7 +200,11 @@ function Suppression.SprayStep()
     TriggerServerEvent(Bridge.Event('fire:water'), call.id, node.id, litres, activeAgent)
 
     -- Local feedback only: the server decides what the water actually did.
-    Suppression.Steam(node)
+    if Fire.Effects then
+        Fire.Effects.Water(node, activeAgent)
+    else
+        Suppression.Steam(node)
+    end
     return node, call
 end
 
@@ -249,8 +253,16 @@ function Suppression.AirStep()
 
     local scba = Shared.Settings().scba or {}
     local coords = Shared.Coords(GetEntityCoords(ped()))
-    local inSmoke = #Client.NodesNear(coords, tonumber(scba.smokeRadius) or 8.0) > 0
-    local drain = inSmoke and (tonumber(scba.drainInSmoke) or 4) or (tonumber(scba.drain) or 1)
+
+    -- Thicker smoke costs more air, so the gauge and what you can see move
+    -- together rather than being two unrelated numbers.
+    local density = Fire.Effects and Fire.Effects.SmokeAt(coords) or 0
+    local inSmoke = density > 0.05 or #Client.NodesNear(coords, tonumber(scba.smokeRadius) or 8.0) > 0
+    local drain = tonumber(scba.drain) or 1
+    if inSmoke then
+        local heavy = tonumber(scba.drainInSmoke) or 4
+        drain = math.max(heavy * 0.5, heavy * math.max(density, 0.5))
+    end
 
     airReported = airReported + drain
 

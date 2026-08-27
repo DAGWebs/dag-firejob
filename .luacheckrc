@@ -57,6 +57,10 @@ read_globals = {
     'SetPedPropIndex', 'SetSeethrough', 'SetVehicleBodyHealth',
     'SetVehicleDeformationFixed', 'SetVehicleDoorBroken', 'SetVehicleEngineHealth',
     'SmashVehicleWindow',
+    -- the sensory layer: particles, timecycles, sound
+    'ClearTimecycleModifier', 'SetTimecycleModifier', 'SetTimecycleModifierStrength',
+    'PlaySoundFrontend', 'PlaySoundFromCoord', 'GetPedBoneCoords',
+    'StartParticleFxLoopedAtCoord', 'StopParticleFxLooped',
 }
 
 exclude_files = { 'tests/lua/vendor/**' }
